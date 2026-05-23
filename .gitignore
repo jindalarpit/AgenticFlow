@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Build outputs
+server/bin/
+web/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Daemon runtime
+.agenticflow/
+
+# Turbo
+.turbo/
+
+# Code review graph
+.code-review-graph/
+
+# Test data (rapid)
+server/internal/**/testdata/

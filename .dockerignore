@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Kiro specs
+.kiro
+
+# Node modules (web dependencies are installed in build stage)
+web/node_modules
+
+# Go build artifacts
+server/bin
+server/tmp
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
