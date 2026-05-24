@@ -39,5 +39,8 @@ coverage.txt
 # Code review graph
 .code-review-graph/
 
+# Kiro specs
+.kiro/specs/
+
 # Test data (rapid)
 server/internal/**/testdata/
