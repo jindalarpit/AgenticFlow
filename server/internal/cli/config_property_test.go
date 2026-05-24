@@ -506,6 +506,62 @@ func testMaxConcurrentValidation(t *rapid.T) {
 	}
 }
 
+// Feature: cli-auth-daemon, Property 1: Config save/load round-trip
+// For any valid Config struct, save then load produces identical field values.
+// Validates: Requirements 1.7, 2.3
+func TestProperty_ConfigSaveLoadRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Create a temp directory to act as HOME so we don't touch the real config
+		tmpHome := filepath.Join(os.TempDir(), fmt.Sprintf("af_prop1_%d_%d", os.Getpid(), time.Now().UnixNano()))
+		if err := os.MkdirAll(tmpHome, 0o755); err != nil {
+			t.Fatalf("failed to create temp home: %v", err)
+		}
+		defer os.RemoveAll(tmpHome)
+
+		// Override HOME to use the temp directory
+		origHome := os.Getenv("HOME")
+		os.Setenv("HOME", tmpHome)
+		defer os.Setenv("HOME", origHome)
+
+		// Generate a random valid Config struct
+		cfg := generateValidConfig(t)
+
+		// Save the config to disk
+		if err := SaveConfig(cfg); err != nil {
+			t.Fatalf("SaveConfig failed: %v", err)
+		}
+
+		// Load the config back from disk
+		loaded := LoadConfig()
+
+		// Assert all fields are identical
+		if loaded.ServerURL != cfg.ServerURL {
+			t.Fatalf("ServerURL mismatch: got %q, want %q", loaded.ServerURL, cfg.ServerURL)
+		}
+		if loaded.Token != cfg.Token {
+			t.Fatalf("Token mismatch: got %q, want %q", loaded.Token, cfg.Token)
+		}
+		if !loaded.TokenExpiresAt.Equal(cfg.TokenExpiresAt) {
+			t.Fatalf("TokenExpiresAt mismatch: got %v, want %v", loaded.TokenExpiresAt, cfg.TokenExpiresAt)
+		}
+		if loaded.UserEmail != cfg.UserEmail {
+			t.Fatalf("UserEmail mismatch: got %q, want %q", loaded.UserEmail, cfg.UserEmail)
+		}
+		if loaded.PollInterval != cfg.PollInterval {
+			t.Fatalf("PollInterval mismatch: got %s, want %s", loaded.PollInterval, cfg.PollInterval)
+		}
+		if loaded.HeartbeatInterval != cfg.HeartbeatInterval {
+			t.Fatalf("HeartbeatInterval mismatch: got %s, want %s", loaded.HeartbeatInterval, cfg.HeartbeatInterval)
+		}
+		if loaded.AgentTimeout != cfg.AgentTimeout {
+			t.Fatalf("AgentTimeout mismatch: got %s, want %s", loaded.AgentTimeout, cfg.AgentTimeout)
+		}
+		if loaded.MaxConcurrentTasks != cfg.MaxConcurrentTasks {
+			t.Fatalf("MaxConcurrentTasks mismatch: got %d, want %d", loaded.MaxConcurrentTasks, cfg.MaxConcurrentTasks)
+		}
+	})
+}
+
 // Feature: agenticflow-core, Property 16: Token Storage Round-Trip
 // For any valid PAT token (string starting with "af_" followed by random alphanumeric chars),
 // storing it in config (with SaveConfig) and reading it back (with LoadConfig) produces the
@@ -567,4 +623,259 @@ func TestPropertyTokenStorageRoundTrip(t *testing.T) {
 				loaded.TokenExpiresAt, expectedExpiry, diff)
 		}
 	})
+}
+
+// Feature: cli-auth-daemon, Property 4: Logout clears token
+// For any Config with non-empty token, after logout and reload, token is empty.
+// Validates: Requirements 3.1
+func TestProperty_LogoutClearsToken(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Create a temp directory to act as HOME so we don't touch the real config
+		tmpHome := filepath.Join(os.TempDir(), fmt.Sprintf("af_logout_test_%d_%d", os.Getpid(), time.Now().UnixNano()))
+		if err := os.MkdirAll(tmpHome, 0o755); err != nil {
+			t.Fatalf("failed to create temp home: %v", err)
+		}
+		defer os.RemoveAll(tmpHome)
+
+		// Override HOME to use the temp directory
+		origHome := os.Getenv("HOME")
+		os.Setenv("HOME", tmpHome)
+		defer os.Setenv("HOME", origHome)
+
+		// Generate a random valid config with a non-empty token
+		const alphanumeric = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		tokenLen := rapid.IntRange(3, 64).Draw(t, "tokenLen")
+		tokenChars := make([]byte, tokenLen)
+		for i := range tokenChars {
+			idx := rapid.IntRange(0, len(alphanumeric)-1).Draw(t, fmt.Sprintf("tchar%d", i))
+			tokenChars[i] = alphanumeric[idx]
+		}
+		token := "af_" + string(tokenChars)
+
+		// Build a valid config with the non-empty token
+		cfg := DefaultConfig()
+		cfg.ServerURL = rapid.SampledFrom([]string{
+			"http://localhost:8080",
+			"https://example.com",
+			"http://192.168.1.1:3000",
+		}).Draw(t, "serverURL")
+		cfg.Token = token
+		cfg.UserEmail = rapid.SampledFrom([]string{
+			"user@example.com",
+			"dev@agenticflow.io",
+			"test@domain.org",
+		}).Draw(t, "email")
+
+		// Optionally set a token expiry
+		useExpiry := rapid.Bool().Draw(t, "useExpiry")
+		if useExpiry {
+			cfg.TokenExpiresAt = time.Now().UTC().Truncate(time.Second).Add(90 * 24 * time.Hour)
+		}
+
+		// Save the initial config (with token)
+		if err := SaveConfig(cfg); err != nil {
+			t.Fatalf("SaveConfig (initial) failed: %v", err)
+		}
+
+		// Perform the logout operation: clear token, expiry, and email, then save
+		cfg.Token = ""
+		cfg.TokenExpiresAt = time.Time{}
+		cfg.UserEmail = ""
+		if err := SaveConfig(cfg); err != nil {
+			t.Fatalf("SaveConfig (logout) failed: %v", err)
+		}
+
+		// Reload the config from disk
+		loaded := LoadConfig()
+
+		// Assert: token must be empty after logout
+		if loaded.Token != "" {
+			t.Fatalf("after logout, token should be empty, got %q", loaded.Token)
+		}
+
+		// Assert: token expiry should be zero
+		if !loaded.TokenExpiresAt.IsZero() {
+			t.Fatalf("after logout, token_expires_at should be zero, got %v", loaded.TokenExpiresAt)
+		}
+
+		// Assert: user email should be empty
+		if loaded.UserEmail != "" {
+			t.Fatalf("after logout, user_email should be empty, got %q", loaded.UserEmail)
+		}
+
+		// Assert: other config fields should be preserved (not wiped by logout)
+		if loaded.ServerURL != cfg.ServerURL {
+			t.Fatalf("logout should preserve server_url: got %q, want %q", loaded.ServerURL, cfg.ServerURL)
+		}
+		if loaded.PollInterval != cfg.PollInterval {
+			t.Fatalf("logout should preserve poll_interval: got %s, want %s", loaded.PollInterval, cfg.PollInterval)
+		}
+		if loaded.HeartbeatInterval != cfg.HeartbeatInterval {
+			t.Fatalf("logout should preserve heartbeat_interval: got %s, want %s", loaded.HeartbeatInterval, cfg.HeartbeatInterval)
+		}
+		if loaded.AgentTimeout != cfg.AgentTimeout {
+			t.Fatalf("logout should preserve agent_timeout: got %s, want %s", loaded.AgentTimeout, cfg.AgentTimeout)
+		}
+		if loaded.MaxConcurrentTasks != cfg.MaxConcurrentTasks {
+			t.Fatalf("logout should preserve max_concurrent_tasks: got %d, want %d", loaded.MaxConcurrentTasks, cfg.MaxConcurrentTasks)
+		}
+	})
+}
+
+// Feature: cli-auth-daemon, Property 16: Config field validation correctness
+// For any key-value pair: accepts supported keys with valid values, rejects unsupported keys,
+// rejects out-of-range values.
+// Validates: Requirements 14.2, 14.4, 14.5
+func TestProperty_ConfigFieldValidationCorrectness(t *testing.T) {
+	supportedKeys := []string{
+		"server_url",
+		"poll_interval",
+		"heartbeat_interval",
+		"agent_timeout",
+		"max_concurrent_tasks",
+	}
+
+	t.Run("supported_keys_valid_values_accepted", func(t *testing.T) {
+		rapid.Check(t, func(t *rapid.T) {
+			key := rapid.SampledFrom(supportedKeys).Draw(t, "key")
+			value := genValidValueForKey(t, key)
+
+			err := ValidateField(key, value)
+			if err != nil {
+				t.Fatalf("ValidateField(%q, %q) should accept valid value, got error: %v", key, value, err)
+			}
+		})
+	})
+
+	t.Run("unsupported_keys_rejected", func(t *testing.T) {
+		rapid.Check(t, func(t *rapid.T) {
+			// Generate a key that is NOT in the supported set
+			unsupportedKey := rapid.StringMatching(`[a-z_]{3,20}`).Draw(t, "unsupportedKey")
+
+			// Ensure it's not accidentally one of the supported keys
+			for _, sk := range supportedKeys {
+				if unsupportedKey == sk {
+					// Mutate to guarantee it's unsupported
+					unsupportedKey = "invalid_" + unsupportedKey
+					break
+				}
+			}
+
+			err := ValidateField(unsupportedKey, "anything")
+			if err == nil {
+				t.Fatalf("ValidateField(%q, %q) should reject unsupported key, but got nil error", unsupportedKey, "anything")
+			}
+		})
+	})
+
+	t.Run("out_of_range_values_rejected", func(t *testing.T) {
+		rapid.Check(t, func(t *rapid.T) {
+			key := rapid.SampledFrom(supportedKeys).Draw(t, "key")
+			value := genInvalidValueForKey(t, key)
+			if value == "" {
+				// server_url with empty string is valid (clearing), skip
+				return
+			}
+
+			err := ValidateField(key, value)
+			if err == nil {
+				t.Fatalf("ValidateField(%q, %q) should reject out-of-range value, but got nil error", key, value)
+			}
+		})
+	})
+}
+
+// genValidValueForKey generates a valid value string for the given config key.
+func genValidValueForKey(t *rapid.T, key string) string {
+	switch key {
+	case "server_url":
+		return rapid.SampledFrom([]string{
+			"", // empty is valid (clearing)
+			"http://localhost:8080",
+			"https://example.com",
+			"http://192.168.1.1:3000",
+			"https://agenticflow.dev:443",
+			"http://10.0.0.1:9090",
+			"https://sub.domain.com/path",
+		}).Draw(t, "validServerURL")
+
+	case "poll_interval":
+		seconds := rapid.Int64Range(1, 300).Draw(t, "validPollSeconds")
+		return fmt.Sprintf("%ds", seconds)
+
+	case "heartbeat_interval":
+		seconds := rapid.Int64Range(5, 300).Draw(t, "validHeartbeatSeconds")
+		return fmt.Sprintf("%ds", seconds)
+
+	case "agent_timeout":
+		// Valid range: 60s to 86400s (1m to 24h)
+		seconds := rapid.Int64Range(60, 86400).Draw(t, "validAgentTimeoutSeconds")
+		return fmt.Sprintf("%ds", seconds)
+
+	case "max_concurrent_tasks":
+		n := rapid.IntRange(1, 100).Draw(t, "validMaxConcurrent")
+		return fmt.Sprintf("%d", n)
+
+	default:
+		return ""
+	}
+}
+
+// genInvalidValueForKey generates an invalid (out-of-range or malformed) value for the given config key.
+func genInvalidValueForKey(t *rapid.T, key string) string {
+	switch key {
+	case "server_url":
+		// Invalid URLs: wrong scheme, missing host, etc.
+		return rapid.SampledFrom([]string{
+			"ftp://example.com",
+			"ws://example.com",
+			"not-a-url-at-all",
+			"://missing-scheme",
+			"file:///local/path",
+			"ssh://server.com",
+		}).Draw(t, "invalidServerURL")
+
+	case "poll_interval":
+		// Out of range: < 1s or > 300s
+		belowMin := rapid.Bool().Draw(t, "pollBelowMin")
+		if belowMin {
+			ms := rapid.Int64Range(1, 999).Draw(t, "pollTooLowMs")
+			return fmt.Sprintf("%dms", ms)
+		}
+		seconds := rapid.Int64Range(301, 600).Draw(t, "pollTooHighSeconds")
+		return fmt.Sprintf("%ds", seconds)
+
+	case "heartbeat_interval":
+		// Out of range: < 5s or > 300s
+		belowMin := rapid.Bool().Draw(t, "heartbeatBelowMin")
+		if belowMin {
+			seconds := rapid.Int64Range(1, 4).Draw(t, "heartbeatTooLowSeconds")
+			return fmt.Sprintf("%ds", seconds)
+		}
+		seconds := rapid.Int64Range(301, 600).Draw(t, "heartbeatTooHighSeconds")
+		return fmt.Sprintf("%ds", seconds)
+
+	case "agent_timeout":
+		// Out of range: < 60s (1m) or > 86400s (24h)
+		belowMin := rapid.Bool().Draw(t, "timeoutBelowMin")
+		if belowMin {
+			seconds := rapid.Int64Range(1, 59).Draw(t, "timeoutTooLowSeconds")
+			return fmt.Sprintf("%ds", seconds)
+		}
+		hours := rapid.Int64Range(25, 100).Draw(t, "timeoutTooHighHours")
+		return fmt.Sprintf("%dh", hours)
+
+	case "max_concurrent_tasks":
+		// Out of range: < 1 or > 100
+		belowMin := rapid.Bool().Draw(t, "maxConcBelowMin")
+		if belowMin {
+			n := rapid.IntRange(-10, 0).Draw(t, "maxConcTooLow")
+			return fmt.Sprintf("%d", n)
+		}
+		n := rapid.IntRange(101, 500).Draw(t, "maxConcTooHigh")
+		return fmt.Sprintf("%d", n)
+
+	default:
+		return "invalid"
+	}
 }

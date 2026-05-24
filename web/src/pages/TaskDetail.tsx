@@ -2,8 +2,10 @@ import { useEffect, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useTask, useTaskMessages, useCancelTask } from "../hooks/useTasks";
 import { useTaskStream } from "../hooks/useTaskStream";
+import { useSessionState } from "../hooks/useSessionState";
 import { useQueryClient } from "@tanstack/react-query";
 import { wsClient, type WSEvent } from "../lib/ws";
+import { TaskInput } from "../components/TaskInput";
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
@@ -52,6 +54,7 @@ export default function TaskDetail() {
   const { messages, seedMessages } = useTaskStream(taskId);
   const cancelTask = useCancelTask();
   const queryClient = useQueryClient();
+  const sessionState = useSessionState(taskId);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -154,6 +157,12 @@ export default function TaskDetail() {
             <div className="flex items-center gap-3">
               <h1 className="text-lg font-semibold text-gray-900">Task</h1>
               <StatusBadge status={task.status} />
+              {sessionState === "waiting_for_input" && (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
+                  Waiting for input…
+                </span>
+              )}
             </div>
             {isRunning && (
               <button
@@ -249,13 +258,24 @@ export default function TaskDetail() {
               <div
                 key={msg.sequence}
                 className={
-                  msg.stream === "stderr" ? "text-red-400" : "text-gray-100"
+                  msg.stream === "stderr"
+                    ? "text-red-400"
+                    : msg.stream === "stdin"
+                      ? "text-green-400"
+                      : "text-gray-100"
                 }
               >
-                <span className="whitespace-pre-wrap">{msg.content}</span>
+                <span className="whitespace-pre-wrap">
+                  {msg.stream === "stdin" ? `> ${msg.content}` : msg.content}
+                </span>
               </div>
             ))}
           </div>
+          <TaskInput
+            taskId={taskId}
+            isRunning={isRunning}
+            isWaitingForInput={sessionState === "waiting_for_input"}
+          />
         </div>
       </div>
     </div>

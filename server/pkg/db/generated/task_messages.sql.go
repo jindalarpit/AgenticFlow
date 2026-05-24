@@ -43,6 +43,40 @@ func (q *Queries) CreateTaskMessage(ctx context.Context, arg CreateTaskMessagePa
 	return i, err
 }
 
+const createTaskMessageIdempotent = `-- name: CreateTaskMessageIdempotent :one
+INSERT INTO task_message (task_id, sequence, stream, content)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (task_id, sequence) DO NOTHING
+RETURNING id, task_id, sequence, stream, content, created_at
+`
+
+type CreateTaskMessageIdempotentParams struct {
+	TaskID   pgtype.UUID `json:"task_id"`
+	Sequence int32       `json:"sequence"`
+	Stream   string      `json:"stream"`
+	Content  string      `json:"content"`
+}
+
+// Inserts a task message, ignoring duplicates (same task_id + sequence).
+func (q *Queries) CreateTaskMessageIdempotent(ctx context.Context, arg CreateTaskMessageIdempotentParams) (TaskMessage, error) {
+	row := q.db.QueryRow(ctx, createTaskMessageIdempotent,
+		arg.TaskID,
+		arg.Sequence,
+		arg.Stream,
+		arg.Content,
+	)
+	var i TaskMessage
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.Sequence,
+		&i.Stream,
+		&i.Content,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listTaskMessagesByTask = `-- name: ListTaskMessagesByTask :many
 SELECT id, task_id, sequence, stream, content, created_at FROM task_message
 WHERE task_id = $1

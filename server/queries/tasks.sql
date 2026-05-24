@@ -60,3 +60,23 @@ LIMIT $3 OFFSET $4;
 UPDATE task
 SET status = 'cancelled', completed_at = now(), updated_at = now()
 WHERE id = $1 AND user_id = $2 AND status IN ('pending', 'running');
+
+-- name: GetTaskDaemonID :one
+-- Returns the daemon_id for a running task.
+SELECT daemon_id FROM task
+WHERE id = $1 AND status = 'running';
+
+-- name: GetAgentStats30d :one
+-- Returns 30-day aggregate stats for a given agent: total completed tasks,
+-- total terminal tasks (completed + failed + cancelled), and average duration
+-- of completed tasks in milliseconds. Returns zeros when no matching tasks exist.
+SELECT
+    COALESCE(COUNT(*) FILTER (WHERE status = 'completed'), 0)::bigint AS total_completed,
+    COALESCE(COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'cancelled')), 0)::bigint AS total_terminal,
+    COALESCE(
+        EXTRACT(EPOCH FROM AVG(completed_at - started_at) FILTER (WHERE status = 'completed' AND started_at IS NOT NULL))::bigint * 1000,
+        0
+    )::bigint AS avg_duration_ms
+FROM task
+WHERE agent_id = $1
+  AND completed_at > now() - INTERVAL '30 days';

@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -26,7 +31,7 @@ var daemonStartCmd = &cobra.Command{
 using local agent CLIs (Claude, Codex, Gemini, etc.).
 
 Use --foreground to run in the current terminal with signal handling.
-Without --foreground, prints instructions for running in the background.`,
+Without --foreground, spawns a background process and exits.`,
 	RunE: runDaemonStart,
 }
 
@@ -46,6 +51,8 @@ var daemonStatusCmd = &cobra.Command{
 
 func init() {
 	daemonStartCmd.Flags().Bool("foreground", false, "Run in the foreground instead of background")
+	daemonStartCmd.Flags().Int("health-port", 0, "Health endpoint port (default: 19514, env: AF_DAEMON_HEALTH_PORT)")
+	daemonStatusCmd.Flags().String("output", "text", "Output format: text or json")
 
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
@@ -54,40 +61,143 @@ func init() {
 
 func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	foreground, _ := cmd.Flags().GetBool("foreground")
+	if foreground {
+		return runDaemonForeground(cmd)
+	}
+	return runDaemonBackground(cmd)
+}
 
+// runDaemonBackground spawns the daemon as a detached child process.
+// It checks the health endpoint first, resolves the current executable,
+// opens the log file, applies platform-specific SysProcAttr, writes the
+// PID file, releases the child handle, and polls until healthy or timeout.
+func runDaemonBackground(cmd *cobra.Command) error {
+	// Resolve health port from flag or default.
+	healthPort := daemon.DefaultHealthPort
+	if hp, _ := cmd.Flags().GetInt("health-port"); hp > 0 {
+		healthPort = hp
+	}
+
+	// 1. Check health endpoint — if "running", error with existing PID.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	health := checkDaemonHealth(ctx, healthPort)
+	if health["status"] == "running" {
+		pid, _ := health["pid"].(float64)
+		return fmt.Errorf("daemon is already running (pid %d). Use 'af daemon stop' first", int(pid))
+	}
+
+	// 2. Resolve current executable path.
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	// 3. Build child args: daemon start --foreground + forwarded flags.
+	args := []string{"daemon", "start", "--foreground"}
+	if serverURL, _ := cmd.Root().Flags().GetString("server-url"); serverURL != "" {
+		args = append(args, "--server-url", serverURL)
+	}
+	if healthPort != daemon.DefaultHealthPort {
+		args = append(args, "--health-port", strconv.Itoa(healthPort))
+	}
+
+	// 4. Ensure daemon directory exists and open log file.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	daemonDir := filepath.Join(home, ".agenticflow")
+	if err := os.MkdirAll(daemonDir, 0o755); err != nil {
+		return fmt.Errorf("create daemon directory: %w", err)
+	}
+
+	logPath := filepath.Join(daemonDir, "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open log file %s: %w", logPath, err)
+	}
+
+	// 5. Build the child command with platform-specific detachment.
+	child := exec.Command(exePath, args...)
+	child.Stdout = logFile
+	child.Stderr = logFile
+	child.SysProcAttr = daemonSysProcAttr(true)
+
+	// 6. Start the child process. On Windows, retry without breakaway if
+	// the parent's Job Object doesn't allow it.
+	if err := child.Start(); err != nil {
+		if isAccessDeniedSpawnErr(err) {
+			// Retry without breakaway — exec.Cmd is not safe to Start()
+			// twice, so build a fresh one.
+			child = exec.Command(exePath, args...)
+			child.Stdout = logFile
+			child.Stderr = logFile
+			child.SysProcAttr = daemonSysProcAttr(false)
+			if err := child.Start(); err != nil {
+				logFile.Close()
+				return fmt.Errorf("start daemon (no breakaway): %w", err)
+			}
+		} else {
+			logFile.Close()
+			return fmt.Errorf("start daemon: %w", err)
+		}
+	}
+	logFile.Close()
+
+	pid := child.Process.Pid
+
+	// 7. Release child process handle so the parent can exit independently.
+	child.Process.Release()
+
+	// 8. Write PID file.
+	pidPath := filepath.Join(daemonDir, "daemon.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not write PID file: %v\n", err)
+	}
+
+	// 9. Poll health endpoint until "running" or 15s timeout.
+	deadline := time.Now().Add(15 * time.Second)
+	started := false
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		health = checkDaemonHealth(hctx, healthPort)
+		hcancel()
+		if health["status"] == "running" {
+			started = true
+			break
+		}
+	}
+
+	// 10. Print result.
+	if !started {
+		fmt.Fprintf(os.Stderr, "Warning: daemon may not have started successfully. Check logs:\n  %s\n", logPath)
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Daemon started (pid %d, version %s)\n", pid, version)
+	fmt.Fprintf(os.Stderr, "Logs: %s\n", logPath)
+	return nil
+}
+
+// runDaemonForeground runs the daemon in the current process with signal handling.
+func runDaemonForeground(cmd *cobra.Command) error {
 	// Load daemon configuration with overrides from flags.
-	overrides := daemon.Overrides{}
+	cliVersion := version
+	overrides := daemon.Overrides{
+		CLIVersion: &cliVersion,
+	}
 	if serverURL, _ := cmd.Root().Flags().GetString("server-url"); serverURL != "" {
 		overrides.ServerURL = &serverURL
+	}
+	if healthPort, _ := cmd.Flags().GetInt("health-port"); healthPort > 0 {
+		overrides.HealthPort = &healthPort
 	}
 
 	cfg, err := daemon.LoadConfig(overrides)
 	if err != nil {
 		return fmt.Errorf("load daemon config: %w", err)
-	}
-
-	// Check if daemon is already running.
-	pid, err := daemon.ReadPIDFile()
-	if err != nil {
-		return fmt.Errorf("check PID file: %w", err)
-	}
-	if pid != 0 && isProcessAlive(pid) {
-		return fmt.Errorf("daemon is already running (PID %d)", pid)
-	}
-
-	if !foreground {
-		// Go doesn't easily fork. Print instructions for background execution.
-		fmt.Fprintln(os.Stderr, "Background daemonization is not directly supported in Go.")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "To run the daemon in the background, use one of:")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  af daemon start --foreground &")
-		fmt.Fprintln(os.Stderr, "  nohup af daemon start --foreground > ~/.agenticflow/daemon.log 2>&1 &")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Or use --foreground to run in the current terminal:")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  af daemon start --foreground")
-		return nil
 	}
 
 	// Run in foreground with signal handling.
@@ -132,128 +242,167 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 }
 
 func runDaemonStop(_ *cobra.Command, _ []string) error {
-	pid, err := daemon.ReadPIDFile()
-	if err != nil {
-		return fmt.Errorf("read PID file: %w", err)
+	healthPort := daemon.DefaultHealthPort
+
+	// 1. Check health endpoint to determine if daemon is running.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	health := checkDaemonHealth(ctx, healthPort)
+	if health["status"] != "running" {
+		fmt.Fprintln(os.Stderr, "Daemon is not running.")
+		return nil
 	}
+
+	pid, _ := health["pid"].(float64)
 	if pid == 0 {
-		fmt.Fprintln(os.Stderr, "No running daemon found (no PID file).")
-		return nil
+		return fmt.Errorf("could not determine daemon PID from health endpoint")
 	}
 
-	// Check if the process is actually running.
-	if !isProcessAlive(pid) {
-		fmt.Fprintf(os.Stderr, "Daemon process (PID %d) is not running. Cleaning up stale PID file.\n", pid)
-		// Clean up stale PID file.
-		if rmErr := removePIDFile(); rmErr != nil {
-			return fmt.Errorf("remove stale PID file: %w", rmErr)
-		}
-		return nil
-	}
-
-	fmt.Fprintf(os.Stderr, "Stopping daemon (PID %d)...\n", pid)
-
-	// Send SIGTERM for graceful shutdown.
-	process, err := os.FindProcess(pid)
+	process, err := os.FindProcess(int(pid))
 	if err != nil {
-		return fmt.Errorf("find process %d: %w", pid, err)
+		return fmt.Errorf("find process %d: %w", int(pid), err)
 	}
 
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		return fmt.Errorf("send SIGTERM to PID %d: %w", pid, err)
+	// 2. Request graceful shutdown via POST /shutdown on the health endpoint.
+	if err := requestDaemonShutdown(healthPort); err != nil {
+		// Graceful shutdown request failed — fall back to SIGKILL.
+		fmt.Fprintf(os.Stderr, "Graceful shutdown request failed: %v — falling back to forced kill.\n", err)
+		if kerr := process.Kill(); kerr != nil {
+			return fmt.Errorf("kill daemon (pid %d): %w", int(pid), kerr)
+		}
+		_ = removePIDFile()
+		fmt.Fprintln(os.Stderr, "Daemon killed.")
+		return nil
 	}
 
-	// Wait up to 30 seconds for the process to exit.
-	const stopTimeout = 30 * time.Second
-	const pollInterval = 500 * time.Millisecond
+	fmt.Fprintf(os.Stderr, "Stopping daemon (pid %d)...\n", int(pid))
 
-	deadline := time.Now().Add(stopTimeout)
-	for time.Now().Before(deadline) {
-		if !isProcessAlive(pid) {
-			fmt.Fprintln(os.Stderr, "Daemon stopped gracefully.")
-			// Clean up PID file if still present.
+	// 3. Poll health endpoint until daemon is gone — 10 cycles × 500ms = 5 seconds.
+	for i := 0; i < 10; i++ {
+		time.Sleep(500 * time.Millisecond)
+		pctx, pcancel := context.WithTimeout(context.Background(), 1*time.Second)
+		h := checkDaemonHealth(pctx, healthPort)
+		pcancel()
+		if h["status"] != "running" {
 			_ = removePIDFile()
+			fmt.Fprintln(os.Stderr, "Daemon stopped.")
 			return nil
 		}
-		time.Sleep(pollInterval)
 	}
 
-	// Process didn't exit in time — send SIGKILL.
-	fmt.Fprintf(os.Stderr, "Daemon did not stop within %s, sending SIGKILL...\n", stopTimeout)
+	// 4. Graceful shutdown didn't complete in time — fall back to SIGKILL.
+	fmt.Fprintln(os.Stderr, "Daemon did not stop within 5s, sending SIGKILL...")
 	if err := process.Signal(syscall.SIGKILL); err != nil {
 		// Process may have exited between our check and the kill.
-		if !isProcessAlive(pid) {
-			fmt.Fprintln(os.Stderr, "Daemon stopped.")
+		if !isProcessAlive(int(pid)) {
 			_ = removePIDFile()
+			fmt.Fprintln(os.Stderr, "Daemon stopped.")
 			return nil
 		}
-		return fmt.Errorf("send SIGKILL to PID %d: %w", pid, err)
+		return fmt.Errorf("send SIGKILL to PID %d: %w", int(pid), err)
 	}
 
 	// Wait briefly for SIGKILL to take effect.
 	time.Sleep(1 * time.Second)
-	if !isProcessAlive(pid) {
+	if !isProcessAlive(int(pid)) {
+		_ = removePIDFile()
 		fmt.Fprintln(os.Stderr, "Daemon killed.")
 	} else {
-		fmt.Fprintf(os.Stderr, "Warning: process %d may still be running.\n", pid)
+		fmt.Fprintf(os.Stderr, "Daemon is still stopping. It may be finishing a running task.\n")
 	}
 
-	// Remove PID file.
-	_ = removePIDFile()
 	return nil
 }
 
-func runDaemonStatus(_ *cobra.Command, _ []string) error {
-	pid, err := daemon.ReadPIDFile()
+// requestDaemonShutdown POSTs to the daemon's /shutdown endpoint to ask it
+// to exit gracefully. Returns an error if the request could not be delivered
+// (network error, non-2xx status, or the endpoint is unavailable).
+func requestDaemonShutdown(healthPort int) error {
+	url := fmt.Sprintf("http://127.0.0.1:%d/shutdown", healthPort)
+	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
-		return fmt.Errorf("read PID file: %w", err)
+		return err
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func runDaemonStatus(cmd *cobra.Command, _ []string) error {
+	healthPort := daemon.DefaultHealthPort
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	health := checkDaemonHealth(ctx, healthPort)
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(health)
 	}
 
-	if pid == 0 || !isProcessAlive(pid) {
+	if health["status"] != "running" {
 		fmt.Println("Status:  stopped")
-		fmt.Println("PID:     -")
-		fmt.Println("Uptime:  -")
-
-		// Still show detected agents even when stopped.
-		printDetectedAgents()
-		fmt.Println("Heartbeat: unknown (daemon not running)")
 		return nil
 	}
 
-	// Daemon is running.
-	fmt.Println("Status:  running")
-	fmt.Printf("PID:     %d\n", pid)
+	// Display running daemon info from health response.
+	pid, _ := health["pid"].(float64)
+	uptime, _ := health["uptime"].(string)
+	activeTaskCount, _ := health["active_task_count"].(float64)
 
-	// Attempt to get uptime from process start time.
-	uptime := getProcessUptime(pid)
-	if uptime > 0 {
-		fmt.Printf("Uptime:  %s\n", formatDuration(uptime))
+	fmt.Printf("Status:  running (pid %d, uptime %s)\n", int(pid), uptime)
+
+	// Display detected runtimes (agents).
+	if agents, ok := health["agents"].([]any); ok && len(agents) > 0 {
+		fmt.Printf("Agents:  %d detected\n", len(agents))
+		for _, a := range agents {
+			if agent, ok := a.(map[string]any); ok {
+				name, _ := agent["name"].(string)
+				ver, _ := agent["version"].(string)
+				path, _ := agent["path"].(string)
+				fmt.Printf("  - %s (version: %s, path: %s)\n", name, ver, path)
+			}
+		}
 	} else {
-		fmt.Println("Uptime:  unknown")
+		fmt.Println("Agents:  none detected")
 	}
 
-	// Detect agents.
-	printDetectedAgents()
-
-	// Heartbeat status — since we can't query the running daemon's internal state
-	// directly, we report based on whether the daemon is running.
-	fmt.Println("Heartbeat: active (daemon running)")
+	fmt.Printf("Tasks:   %d active\n", int(activeTaskCount))
 
 	return nil
 }
 
-// printDetectedAgents runs agent detection and prints the results.
-func printDetectedAgents() {
-	agents := daemon.DetectAgents(nil)
-	if len(agents) == 0 {
-		fmt.Println("Agents:  none detected")
-		return
+// checkDaemonHealth calls the daemon's local health endpoint on the given port.
+func checkDaemonHealth(ctx context.Context, port int) map[string]any {
+	addr := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr, nil)
+	if err != nil {
+		return map[string]any{"status": "stopped"}
 	}
 
-	fmt.Printf("Agents:  %d detected\n", len(agents))
-	for name, entry := range agents {
-		fmt.Printf("  - %s (version: %s, path: %s)\n", name, entry.Version, entry.Path)
+	httpClient := &http.Client{Timeout: 2 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return map[string]any{"status": "stopped"}
 	}
+	defer resp.Body.Close()
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return map[string]any{"status": "stopped"}
+	}
+	return result
 }
 
 // isProcessAlive checks if a process with the given PID is currently running.
@@ -273,55 +422,9 @@ func removePIDFile() error {
 	if err != nil {
 		return err
 	}
-	pidPath := home + "/.agenticflow/daemon.pid"
+	pidPath := filepath.Join(home, ".agenticflow", "daemon.pid")
 	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
-}
-
-// getProcessUptime attempts to determine how long a process has been running.
-// On macOS/Linux, this uses /proc or sysctl. Returns 0 if unable to determine.
-func getProcessUptime(pid int) time.Duration {
-	// Try reading /proc/<pid>/stat for Linux.
-	statPath := fmt.Sprintf("/proc/%d/stat", pid)
-	if _, err := os.Stat(statPath); err == nil {
-		// On Linux, we could parse the start time from /proc/pid/stat.
-		// For simplicity and portability, we use the PID file modification time
-		// as a proxy for daemon start time.
-		return getUptimeFromPIDFile()
-	}
-
-	// Fallback: use PID file modification time as proxy.
-	return getUptimeFromPIDFile()
-}
-
-// getUptimeFromPIDFile uses the PID file's modification time as a proxy for
-// when the daemon started.
-func getUptimeFromPIDFile() time.Duration {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return 0
-	}
-	pidPath := home + "/.agenticflow/daemon.pid"
-	info, err := os.Stat(pidPath)
-	if err != nil {
-		return 0
-	}
-	return time.Since(info.ModTime())
-}
-
-// formatDuration formats a duration in a human-readable way.
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		m := int(d.Minutes())
-		s := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm%ds", m, s)
-	}
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	return fmt.Sprintf("%dh%dm", h, m)
 }

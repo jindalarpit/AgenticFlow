@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/agenticflow/agenticflow/internal/release"
 	"github.com/spf13/cobra"
 )
 
@@ -23,9 +24,9 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.Version = fmt.Sprintf("%s (commit: %s, built: %s)\ngo: %s, os/arch: %s/%s",
-		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	rootCmd.SetVersionTemplate("af {{.Version}}\n")
+	rootCmd.Version = release.FormatVersion(version, commit, date) +
+		fmt.Sprintf("\ngo: %s, os/arch: %s/%s", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	rootCmd.SetVersionTemplate("{{.Version}}\n")
 
 	// Global persistent flags
 	rootCmd.PersistentFlags().String("server-url", "", "AgenticFlow server URL (env: AF_SERVER_URL)")
@@ -36,6 +37,8 @@ func init() {
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(tokenCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 func main() {

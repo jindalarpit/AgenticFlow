@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/agenticflow/agenticflow/internal/daemon/execenv"
 	"pgregory.net/rapid"
 )
 
@@ -215,6 +218,165 @@ func TestProperty_EmptyBrief_NoInjection(t *testing.T) {
 		agentsMDPath := filepath.Join(tmpDir, "AGENTS.md")
 		if _, err := os.Stat(agentsMDPath); err == nil {
 			t.Fatalf("provider %q: AGENTS.md should NOT be written when brief is empty", provider)
+		}
+	})
+}
+
+// Feature: cli-auth-daemon, Property 8: Task spawn includes all agent config
+// For any task claim with env vars, args, and prompt, constructed exec.Cmd includes all of them.
+// **Validates: Requirements 9.3**
+
+// envKeyGen generates a valid, non-blocked environment variable key.
+func envKeyGen() *rapid.Generator[string] {
+	return rapid.Custom[string](func(t *rapid.T) string {
+		// Generate keys that are NOT blocked (not HOME, PATH, USER, SHELL, TERM, AF_*).
+		blocked := map[string]bool{
+			"HOME": true, "PATH": true, "USER": true, "SHELL": true, "TERM": true,
+		}
+		for {
+			length := rapid.IntRange(2, 20).Draw(t, "keyLen")
+			chars := make([]byte, length)
+			for i := range chars {
+				// Use uppercase letters and underscores for env var names.
+				c := rapid.SampledFrom([]byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789")).Draw(t, "keyChar")
+				chars[i] = c
+			}
+			key := string(chars)
+			// Ensure not blocked and doesn't start with AF_.
+			if !blocked[key] && !strings.HasPrefix(key, "AF_") && len(key) > 0 {
+				return key
+			}
+		}
+	})
+}
+
+// envValueGen generates a non-empty environment variable value.
+func envValueGen() *rapid.Generator[string] {
+	return rapid.Custom[string](func(t *rapid.T) string {
+		length := rapid.IntRange(1, 100).Draw(t, "valLen")
+		chars := make([]byte, length)
+		for i := range chars {
+			chars[i] = byte(rapid.IntRange(32, 126).Draw(t, "valChar"))
+		}
+		return string(chars)
+	})
+}
+
+// customArgGen generates a non-empty custom argument string.
+func customArgGen() *rapid.Generator[string] {
+	return rapid.Custom[string](func(t *rapid.T) string {
+		length := rapid.IntRange(1, 50).Draw(t, "argLen")
+		chars := make([]byte, length)
+		for i := range chars {
+			// Use printable ASCII excluding whitespace for args.
+			chars[i] = byte(rapid.IntRange(33, 126).Draw(t, "argChar"))
+		}
+		return string(chars)
+	})
+}
+
+// TestProperty_TaskSpawnIncludesAllAgentConfig verifies that for any task claim
+// containing custom environment variables, custom arguments, and a prompt,
+// the constructed execution environment includes all specified environment
+// variables in its EnvVars, all custom arguments in its CustomArgs, and the
+// prompt is preserved.
+func TestProperty_TaskSpawnIncludesAllAgentConfig(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate random agent config.
+		numEnvVars := rapid.IntRange(0, 10).Draw(t, "numEnvVars")
+		agentEnv := make(map[string]string, numEnvVars)
+		for i := 0; i < numEnvVars; i++ {
+			key := envKeyGen().Draw(t, "envKey")
+			val := envValueGen().Draw(t, "envVal")
+			agentEnv[key] = val
+		}
+
+		numArgs := rapid.IntRange(0, 5).Draw(t, "numArgs")
+		agentArgs := make([]string, numArgs)
+		for i := 0; i < numArgs; i++ {
+			agentArgs[i] = customArgGen().Draw(t, "customArg")
+		}
+
+		prompt := nonEmptyStringGen().Draw(t, "prompt")
+		provider := rapid.SampledFrom([]string{"claude", "pi", "gemini", "opencode", "codex", "copilot", "kiro"}).Draw(t, "provider")
+
+		// Simulate the daemon's executeTask logic:
+		// 1. MergeEnv with agent custom_env (no daemon env, no task env for simplicity).
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		mergedEnv := execenv.MergeEnv(nil, agentEnv, nil, logger)
+
+		// 2. resolveCustomArgs equivalent.
+		task := &PollResponse{
+			TaskID:    "test-task-id",
+			AgentType: provider,
+			Prompt:    prompt,
+			Agent: &TaskAgentData{
+				ID:         "agent-id",
+				Name:       "TestAgent",
+				CustomEnv:  agentEnv,
+				CustomArgs: agentArgs,
+			},
+		}
+		customArgs := resolveCustomArgs(task)
+
+		// 3. Build ExecEnv (same as daemon's executeTask).
+		execTask := execenv.Task{
+			ID:         "test-task-id",
+			AgentType:  provider,
+			Prompt:     prompt,
+			EnvVars:    mergedEnv,
+			CustomArgs: customArgs,
+		}
+
+		tmpDir, err := os.MkdirTemp("", "spawn_property_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		execCfg := execenv.Config{
+			WorkspacesRoot: tmpDir,
+			AgentTimeout:   60,
+		}
+
+		env, err := execenv.NewExecEnv(execTask, execCfg, "/usr/bin/fake-agent", logger)
+		if err != nil {
+			t.Fatalf("NewExecEnv failed: %v", err)
+		}
+
+		// Property 1: All non-blocked agent env vars are present in the exec env.
+		for k, v := range agentEnv {
+			if execenv.IsBlockedEnvKey(k) {
+				// Blocked keys should NOT be in the merged env.
+				if _, exists := env.EnvVars[k]; exists {
+					t.Fatalf("blocked env key %q should not be in exec env", k)
+				}
+			} else {
+				got, exists := env.EnvVars[k]
+				if !exists {
+					t.Fatalf("agent env key %q not found in exec env", k)
+				}
+				if got != v {
+					t.Fatalf("agent env key %q: expected %q, got %q", k, v, got)
+				}
+			}
+		}
+
+		// Property 2: All custom args are present in the exec env.
+		if len(agentArgs) > 0 {
+			if len(env.CustomArgs) != len(agentArgs) {
+				t.Fatalf("expected %d custom args, got %d", len(agentArgs), len(env.CustomArgs))
+			}
+			for i, arg := range agentArgs {
+				if env.CustomArgs[i] != arg {
+					t.Fatalf("custom arg[%d]: expected %q, got %q", i, arg, env.CustomArgs[i])
+				}
+			}
+		}
+
+		// Property 3: Prompt is preserved in the exec env.
+		if env.Prompt != prompt {
+			t.Fatalf("expected prompt %q, got %q", prompt, env.Prompt)
 		}
 	})
 }

@@ -187,6 +187,109 @@ func (e *ExecEnv) Run(ctx context.Context, stdout, stderr io.Writer) (int, error
 	}
 }
 
+// RunResult holds the outcome of a process started by RunWithStdin.
+// The caller receives this via the channel returned by RunWithStdin.
+type RunResult struct {
+	ExitCode int
+	Err      error
+}
+
+// RunWithStdin spawns the agent CLI process with stdin pipe support.
+// Unlike Run, this method starts the process and returns immediately with:
+//   - stdinPipe: a writable pipe connected to the process's stdin
+//   - done: a channel that receives the RunResult when the process exits
+//   - err: non-nil if the process could not be started
+//
+// The caller is responsible for closing the stdin pipe when the task completes.
+// On context cancellation, the process receives SIGTERM followed by SIGKILL
+// after 10 seconds (same graceful shutdown as Run).
+func (e *ExecEnv) RunWithStdin(ctx context.Context, stdout, stderr io.Writer) (io.WriteCloser, <-chan RunResult, error) {
+	args := buildProviderArgs(e.Provider, e.Prompt, e.WorkspaceDir, e.Model, e.ArgsTemplate, e.SystemPrompt, e.CustomArgs)
+
+	cmd := exec.CommandContext(ctx, e.BinaryPath, args...)
+	cmd.Dir = e.WorkspaceDir
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	// Build environment: inherit current env + overlay task-specific vars.
+	env := os.Environ()
+	for k, v := range e.EnvVars {
+		env = append(env, k+"="+v)
+	}
+	// Inject provider-specific environment variables.
+	for k, v := range providerEnvVars(e.Provider) {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
+
+	// Disable automatic process killing on context cancellation so we can
+	// handle graceful shutdown ourselves (SIGTERM → wait → SIGKILL).
+	cmd.Cancel = nil
+
+	// Create stdin pipe for bidirectional communication.
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("execenv: create stdin pipe: %w", err)
+	}
+
+	e.Logger.Info("execenv: starting process with stdin pipe",
+		"binary", e.BinaryPath,
+		"args", args,
+		"workdir", e.WorkspaceDir,
+	)
+
+	if err := cmd.Start(); err != nil {
+		stdinPipe.Close()
+		return nil, nil, fmt.Errorf("execenv: start process: %w", err)
+	}
+
+	// Launch a goroutine to wait for process completion and handle graceful shutdown.
+	done := make(chan RunResult, 1)
+	go func() {
+		waitDone := make(chan error, 1)
+		go func() {
+			waitDone <- cmd.Wait()
+		}()
+
+		select {
+		case err := <-waitDone:
+			// Process exited normally (or with error).
+			done <- RunResult{ExitCode: exitCode(cmd, err), Err: err}
+
+		case <-ctx.Done():
+			// Context cancelled — initiate graceful shutdown.
+			e.Logger.Info("execenv: context cancelled, sending SIGTERM", "task_id", e.TaskID)
+
+			// Send SIGTERM for graceful shutdown.
+			if cmd.Process != nil {
+				_ = cmd.Process.Signal(syscall.SIGTERM)
+			}
+
+			// Wait up to 10 seconds for the process to exit.
+			killTimer := time.NewTimer(10 * time.Second)
+			defer killTimer.Stop()
+
+			select {
+			case err := <-waitDone:
+				// Process exited after SIGTERM.
+				done <- RunResult{ExitCode: exitCode(cmd, err), Err: ctx.Err()}
+
+			case <-killTimer.C:
+				// Process didn't exit in time — force kill.
+				e.Logger.Warn("execenv: process did not exit after SIGTERM, sending SIGKILL", "task_id", e.TaskID)
+				if cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+				// Wait for the kill to take effect.
+				err := <-waitDone
+				done <- RunResult{ExitCode: exitCode(cmd, err), Err: ctx.Err()}
+			}
+		}
+	}()
+
+	return stdinPipe, done, nil
+}
+
 // Cleanup removes the workspace directory and all its contents.
 func (e *ExecEnv) Cleanup() error {
 	if err := os.RemoveAll(e.WorkspaceDir); err != nil {

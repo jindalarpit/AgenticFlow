@@ -139,6 +139,15 @@ func (h *Hub) SendToUser(userID string, event Event) {
 	}
 }
 
+// IsDaemonConnected returns true if the daemon with the given ID has an active
+// WebSocket connection to the hub.
+func (h *Hub) IsDaemonConnected(daemonID string) bool {
+	h.mu.RLock()
+	_, ok := h.daemons[daemonID]
+	h.mu.RUnlock()
+	return ok
+}
+
 // SendToDaemon sends an event to a specific daemon's client connection.
 func (h *Hub) SendToDaemon(daemonID string, event Event) {
 	data, err := json.Marshal(event)

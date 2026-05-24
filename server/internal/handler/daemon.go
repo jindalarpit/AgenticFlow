@@ -18,9 +18,10 @@ import (
 
 // DaemonHandler holds dependencies for daemon API handlers.
 type DaemonHandler struct {
-	Queries            *db.Queries
-	Hub                *realtime.Hub
-	AgentStatusService *service.AgentStatusService
+	Queries              *db.Queries
+	Hub                  *realtime.Hub
+	AgentStatusService   *service.AgentStatusService
+	SessionStateManager  *service.SessionStateManager
 }
 
 // NewDaemonHandler creates a new DaemonHandler.
@@ -79,6 +80,11 @@ type TaskMessageEntry struct {
 // TaskMessagesReq is the request body for POST /api/daemon/tasks/{taskId}/messages.
 type TaskMessagesReq struct {
 	Messages []TaskMessageEntry `json:"messages"`
+}
+
+// TaskInputStateReq is the request body for POST /api/daemon/tasks/{taskId}/input-state.
+type TaskInputStateReq struct {
+	State string `json:"state"` // "waiting" or "cleared"
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +554,11 @@ func (h *DaemonHandler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear session state on terminal transition.
+	if h.SessionStateManager != nil {
+		h.SessionStateManager.ClearState(taskID)
+	}
+
 	// Broadcast task_completed event via WebSocket.
 	if h.Hub != nil {
 		h.Hub.Broadcast(realtime.Event{
@@ -599,6 +610,11 @@ func (h *DaemonHandler) FailTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear session state on terminal transition.
+	if h.SessionStateManager != nil {
+		h.SessionStateManager.ClearState(taskID)
+	}
+
 	// Broadcast task_failed event via WebSocket.
 	if h.Hub != nil {
 		h.Hub.Broadcast(realtime.Event{
@@ -648,11 +664,11 @@ func (h *DaemonHandler) ReportTaskMessages(w http.ResponseWriter, r *http.Reques
 
 	for _, msg := range req.Messages {
 		stream := strings.TrimSpace(msg.Stream)
-		if stream != "stdout" && stream != "stderr" {
+		if stream != "stdout" && stream != "stderr" && stream != "stdin" {
 			stream = "stdout"
 		}
 
-		_, err := h.Queries.CreateTaskMessage(r.Context(), db.CreateTaskMessageParams{
+		_, err := h.Queries.CreateTaskMessageIdempotent(r.Context(), db.CreateTaskMessageIdempotentParams{
 			TaskID:   taskUUID,
 			Sequence: msg.Sequence,
 			Stream:   stream,
@@ -682,10 +698,67 @@ func (h *DaemonHandler) ReportTaskMessages(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	// Update session state to "producing_output" since we received new task output.
+	if h.SessionStateManager != nil {
+		h.SessionStateManager.SetState(taskID, service.SessionStateProducingOutput)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":   "ok",
 		"received": len(req.Messages),
 	})
+}
+
+// ReportInputState handles POST /api/daemon/tasks/{taskId}/input-state.
+// Called by the daemon when the InputDetector signals a state change.
+func (h *DaemonHandler) ReportInputState(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+	if taskID == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "taskId is required")
+		return
+	}
+
+	var req TaskInputStateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	req.State = strings.TrimSpace(req.State)
+	if req.State != "waiting" && req.State != "cleared" {
+		writeErrorJSON(w, http.StatusBadRequest, "state must be \"waiting\" or \"cleared\"")
+		return
+	}
+
+	// Update session state and broadcast appropriate WebSocket event.
+	switch req.State {
+	case "waiting":
+		if h.SessionStateManager != nil {
+			h.SessionStateManager.SetState(taskID, service.SessionStateWaitingForInput)
+		}
+		if h.Hub != nil {
+			h.Hub.Broadcast(realtime.Event{
+				Type: "input_requested",
+				Payload: map[string]interface{}{
+					"task_id": taskID,
+				},
+			})
+		}
+	case "cleared":
+		if h.SessionStateManager != nil {
+			h.SessionStateManager.SetState(taskID, service.SessionStateProducingOutput)
+		}
+		if h.Hub != nil {
+			h.Hub.Broadcast(realtime.Event{
+				Type: "input_cleared",
+				Payload: map[string]interface{}{
+					"task_id": taskID,
+				},
+			})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ---------------------------------------------------------------------------

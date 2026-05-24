@@ -114,6 +114,35 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 	return i, err
 }
 
+const getAgentStats30d = `-- name: GetAgentStats30d :one
+SELECT
+    COALESCE(COUNT(*) FILTER (WHERE status = 'completed'), 0)::bigint AS total_completed,
+    COALESCE(COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'cancelled')), 0)::bigint AS total_terminal,
+    COALESCE(
+        EXTRACT(EPOCH FROM AVG(completed_at - started_at) FILTER (WHERE status = 'completed' AND started_at IS NOT NULL))::bigint * 1000,
+        0
+    )::bigint AS avg_duration_ms
+FROM task
+WHERE agent_id = $1
+  AND completed_at > now() - INTERVAL '30 days'
+`
+
+type GetAgentStats30dRow struct {
+	TotalCompleted int64 `json:"total_completed"`
+	TotalTerminal  int64 `json:"total_terminal"`
+	AvgDurationMs  int64 `json:"avg_duration_ms"`
+}
+
+// Returns 30-day aggregate stats for a given agent: total completed tasks,
+// total terminal tasks (completed + failed + cancelled), and average duration
+// of completed tasks in milliseconds. Returns zeros when no matching tasks exist.
+func (q *Queries) GetAgentStats30d(ctx context.Context, agentID pgtype.UUID) (GetAgentStats30dRow, error) {
+	row := q.db.QueryRow(ctx, getAgentStats30d, agentID)
+	var i GetAgentStats30dRow
+	err := row.Scan(&i.TotalCompleted, &i.TotalTerminal, &i.AvgDurationMs)
+	return i, err
+}
+
 const getTaskByID = `-- name: GetTaskByID :one
 SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id FROM task
 WHERE id = $1
@@ -142,6 +171,19 @@ func (q *Queries) GetTaskByID(ctx context.Context, id pgtype.UUID) (Task, error)
 	return i, err
 }
 
+const getTaskDaemonID = `-- name: GetTaskDaemonID :one
+SELECT daemon_id FROM task
+WHERE id = $1 AND status = 'running'
+`
+
+// Returns the daemon_id for a running task.
+func (q *Queries) GetTaskDaemonID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getTaskDaemonID, id)
+	var daemon_id pgtype.UUID
+	err := row.Scan(&daemon_id)
+	return daemon_id, err
+}
+
 const listTasksByAgent = `-- name: ListTasksByAgent :many
 SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id FROM task
 WHERE agent_id = $1 AND user_id = $2
@@ -157,7 +199,12 @@ type ListTasksByAgentParams struct {
 }
 
 func (q *Queries) ListTasksByAgent(ctx context.Context, arg ListTasksByAgentParams) ([]Task, error) {
-	rows, err := q.db.Query(ctx, listTasksByAgent, arg.AgentID, arg.UserID, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listTasksByAgent,
+		arg.AgentID,
+		arg.UserID,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}

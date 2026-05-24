@@ -91,8 +91,10 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 
 	// Daemon API routes (require daemon token auth).
 	agentStatusSvc := service.NewAgentStatusService(queries, hub)
+	sessionStateMgr := service.NewSessionStateManager(hub)
 	daemonH := handler.NewDaemonHandler(queries, hub)
 	daemonH.AgentStatusService = agentStatusSvc
+	daemonH.SessionStateManager = sessionStateMgr
 	r.Route("/api/daemon", func(r chi.Router) {
 		r.Use(middleware.DaemonAuth(queries, patCache))
 
@@ -104,6 +106,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Post("/tasks/{taskId}/complete", daemonH.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", daemonH.FailTask)
 		r.Post("/tasks/{taskId}/messages", daemonH.ReportTaskMessages)
+		r.Post("/tasks/{taskId}/input-state", daemonH.ReportInputState)
 	})
 
 	// Protected API routes (require user PAT auth).
@@ -127,6 +130,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Post("/api/agents", agentH.CreateAgent)
 		r.Get("/api/agents", agentH.ListAgents)
 		r.Get("/api/agents/{id}", agentH.GetAgent)
+		r.Get("/api/agents/{id}/stats", agentH.GetAgentStats)
 		r.Put("/api/agents/{id}", agentH.UpdateAgent)
 		r.Delete("/api/agents/{id}", agentH.DeleteAgent)
 
@@ -136,6 +140,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Get("/api/tasks/{taskId}", userH.GetTask)
 		r.Get("/api/tasks/{taskId}/messages", userH.ListTaskMessages)
 		r.Post("/api/tasks/{taskId}/cancel", userH.CancelTask)
+		r.Post("/api/tasks/{id}/input", userH.SendTaskInput)
 
 		// Custom Agents.
 		r.Post("/api/custom-agents", userH.CreateCustomAgent)

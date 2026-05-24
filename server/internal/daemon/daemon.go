@@ -38,6 +38,9 @@ type HTTPClient interface {
 	FailTask(ctx context.Context, taskID string, errMsg string, exitCode int) error
 	// ReportMessages sends streaming output messages to the server.
 	ReportMessages(ctx context.Context, taskID string, messages []TaskMessage) error
+	// ReportInputState notifies the server of input detection state changes.
+	// State is "waiting" when the CLI is waiting for input, "cleared" when output resumes.
+	ReportInputState(ctx context.Context, taskID string, state string) error
 }
 
 // RegisterRequest is the payload sent to POST /api/daemon/register.
@@ -59,8 +62,9 @@ type DeregisterRequest struct {
 
 // HeartbeatRequest is the payload sent to POST /api/daemon/heartbeat.
 type HeartbeatRequest struct {
-	DaemonID    string `json:"daemon_id"`
-	ActiveTasks int64  `json:"active_tasks"`
+	DaemonID    string   `json:"daemon_id"`
+	Runtimes    []string `json:"runtimes"`
+	ActiveTasks int64    `json:"active_tasks"`
 }
 
 // PollRequest is the payload sent to GET /api/daemon/tasks/poll.
@@ -101,6 +105,17 @@ type Daemon struct {
 	// activeTasks tracks the number of currently executing tasks.
 	activeTasks atomic.Int64
 
+	// stdinManager manages stdin pipes for active tasks, enabling
+	// bidirectional communication with CLI processes.
+	stdinManager *StdinPipeManager
+
+	// sequences tracks per-task sequence counters shared between the
+	// streamingReporter (stdout/stderr) and handleTaskInput (stdin).
+	sequences *sequenceTracker
+
+	// healthServer is the local HTTP health endpoint server.
+	healthServer *HealthServer
+
 	// stopCh is closed when Stop() is called to signal shutdown.
 	stopCh chan struct{}
 	// done is closed when Run() exits.
@@ -115,16 +130,24 @@ type Daemon struct {
 	// heartbeatRetryDelay is the delay between heartbeat retries.
 	// Defaults to 5s if zero. Overridable for testing.
 	heartbeatRetryDelay time.Duration
+
+	// consecutiveHeartbeatFailures tracks how many consecutive heartbeat
+	// intervals have failed (all retries exhausted). This is NOT the retry
+	// count within a single interval — it counts interval-level failures.
+	// Reset to 0 on any successful heartbeat.
+	consecutiveHeartbeatFailures int
 }
 
 // New creates a new Daemon instance with the given configuration and logger.
 func New(cfg Config, logger *slog.Logger) *Daemon {
 	return &Daemon{
-		cfg:      cfg,
-		logger:   logger,
-		runtimes: make(map[string]string),
-		stopCh:   make(chan struct{}),
-		done:     make(chan struct{}),
+		cfg:          cfg,
+		logger:       logger,
+		runtimes:     make(map[string]string),
+		stdinManager: NewStdinPipeManager(),
+		sequences:    newSequenceTracker(),
+		stopCh:       make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -137,13 +160,15 @@ func (d *Daemon) SetClient(client HTTPClient) {
 // Run starts the daemon lifecycle:
 //  1. Clean stale PID file
 //  2. Write PID file
-//  3. Register with server
-//  4. Start heartbeat loop
-//  5. Start poll loop
-//  6. Start GC loop
-//  7. Block until ctx is cancelled or Stop() is called
-//  8. Deregister on shutdown
-//  9. Remove PID file
+//  3. Start health server
+//  4. Register with server
+//  5. Start heartbeat loop
+//  6. Start poll loop
+//  7. Start GC loop
+//  8. Block until ctx is cancelled or Stop() is called
+//  9. Stop health server
+//  10. Deregister on shutdown
+//  11. Remove PID file
 func (d *Daemon) Run(ctx context.Context) error {
 	defer close(d.done)
 
@@ -159,6 +184,26 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("write PID file: %w", err)
 	}
 	defer d.RemovePIDFile()
+
+	// Start health server before entering main loop.
+	// This binds the port early to detect another running daemon.
+	healthCfg := HealthServerConfig{
+		Port: d.cfg.HealthPort,
+		ShutdownCallback: func() {
+			d.Stop()
+		},
+	}
+	d.healthServer = NewHealthServer(healthCfg, d)
+	if err := d.healthServer.Start(); err != nil {
+		return fmt.Errorf("start health server: %w", err)
+	}
+	d.logger.Info("health server started", "addr", d.healthServer.Addr())
+	defer func() {
+		if err := d.healthServer.Stop(); err != nil {
+			d.logger.Warn("failed to stop health server", "error", err)
+		}
+		d.logger.Debug("health server stopped")
+	}()
 
 	agentNames := make([]string, 0, len(d.cfg.Agents))
 	for name := range d.cfg.Agents {
@@ -275,6 +320,18 @@ func (d *Daemon) RuntimeIDs() []string {
 	return ids
 }
 
+// StdinManager returns the daemon's StdinPipeManager for writing input
+// to running task processes.
+func (d *Daemon) StdinManager() *StdinPipeManager {
+	return d.stdinManager
+}
+
+// ConsecutiveHeartbeatFailures returns the current count of consecutive
+// heartbeat interval failures. Useful for testing and monitoring.
+func (d *Daemon) ConsecutiveHeartbeatFailures() int {
+	return d.consecutiveHeartbeatFailures
+}
+
 // register sends a registration request to the server.
 func (d *Daemon) register(ctx context.Context) error {
 	if d.client == nil {
@@ -349,6 +406,10 @@ func (d *Daemon) heartbeatLoop(ctx context.Context) {
 
 // sendHeartbeat sends a single heartbeat with retry logic.
 // Retries up to 3 times with a 5-second delay on failure.
+// Tracks consecutive interval failures and escalates log level:
+// - < 3 consecutive failures: warning-level log
+// - >= 3 consecutive failures: error-level log indicating connectivity loss
+// Resets the counter on any successful heartbeat.
 func (d *Daemon) sendHeartbeat(ctx context.Context) {
 	if d.client == nil {
 		return
@@ -363,15 +424,14 @@ func (d *Daemon) sendHeartbeat(ctx context.Context) {
 		retryDelay = 5 * time.Second
 	}
 
-	req := HeartbeatRequest{
-		DaemonID:    d.cfg.DaemonID,
-		ActiveTasks: d.activeTasks.Load(),
-	}
+	req := d.BuildHeartbeatRequest()
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		err := d.client.Heartbeat(ctx, req)
 		if err == nil {
 			d.logger.Debug("heartbeat sent successfully")
+			// Reset consecutive failure counter on success.
+			d.consecutiveHeartbeatFailures = 0
 			return
 		}
 
@@ -393,9 +453,20 @@ func (d *Daemon) sendHeartbeat(ctx context.Context) {
 		}
 	}
 
-	d.logger.Warn("heartbeat failed after all retries",
-		"daemon_id", d.cfg.DaemonID,
-	)
+	// All retries within this interval exhausted — increment consecutive failure counter.
+	d.consecutiveHeartbeatFailures++
+
+	if d.consecutiveHeartbeatFailures >= 3 {
+		d.logger.Error("heartbeat connectivity loss detected",
+			"consecutive_failures", d.consecutiveHeartbeatFailures,
+			"daemon_id", d.cfg.DaemonID,
+		)
+	} else {
+		d.logger.Warn("heartbeat failed after all retries",
+			"consecutive_failures", d.consecutiveHeartbeatFailures,
+			"daemon_id", d.cfg.DaemonID,
+		)
+	}
 }
 
 // pollLoop polls the server for available tasks at the configured interval.
@@ -580,8 +651,40 @@ func (d *Daemon) executeTask(ctx context.Context, task *PollResponse) {
 	stdoutBuf := &truncatingBuffer{maxBytes: maxStdoutBytes}
 	stderrBuf := &tailBuffer{maxChars: maxStderrChars}
 
+	// Create InputDetector for this task to detect when the CLI is waiting for input.
+	// The onWaiting callback POSTs "waiting" state to the server.
+	// The onCleared callback POSTs "cleared" state to the server.
+	detector := NewInputDetector(
+		InputDetectorConfig{},
+		func() {
+			// onWaiting: notify server that CLI is waiting for input.
+			if d.client != nil {
+				if err := d.client.ReportInputState(ctx, taskID, "waiting"); err != nil {
+					logger.Debug("failed to report input state waiting", "error", err)
+				}
+			}
+		},
+		func() {
+			// onCleared: notify server that CLI is no longer waiting for input.
+			if d.client != nil {
+				if err := d.client.ReportInputState(ctx, taskID, "cleared"); err != nil {
+					logger.Debug("failed to report input state cleared", "error", err)
+				}
+			}
+		},
+	)
+	defer detector.Stop()
+
 	// streamingWriter wraps a buffer and sends chunks to the server as task messages.
+	// It also feeds output to the InputDetector for prompt pattern analysis.
 	sequence := 0
+
+	// Register the sequence counter with the tracker so handleTaskInput
+	// can share the same counter for stdin messages, ensuring all streams
+	// (stdout, stderr, stdin) use monotonically increasing sequence numbers.
+	d.sequences.Register(taskID, &sequence)
+	defer d.sequences.Remove(taskID)
+
 	streamWriter := func(stream string, buf io.Writer) io.Writer {
 		return &streamingReporter{
 			inner:    buf,
@@ -591,17 +694,32 @@ func (d *Daemon) executeTask(ctx context.Context, task *PollResponse) {
 			stream:   stream,
 			sequence: &sequence,
 			logger:   logger,
+			detector: detector,
 		}
 	}
 
 	stdoutWriter := streamWriter("stdout", stdoutBuf)
 	stderrWriter := streamWriter("stderr", stderrBuf)
 
-	// Run the agent process with timeout.
+	// Run the agent process with timeout and stdin pipe support.
 	taskCtx, taskCancel := context.WithTimeout(ctx, d.cfg.AgentTimeout)
 	defer taskCancel()
 
-	exitCode, runErr := env.Run(taskCtx, stdoutWriter, stderrWriter)
+	stdinPipe, done, startErr := env.RunWithStdin(taskCtx, stdoutWriter, stderrWriter)
+	if startErr != nil {
+		logger.Error("failed to start agent process", "error", startErr)
+		d.reportTaskFailure(ctx, taskID, fmt.Sprintf("failed to start agent process: %v", startErr), -1)
+		return
+	}
+
+	// Register the stdin pipe with the manager for bidirectional communication.
+	d.stdinManager.Register(taskID, stdinPipe)
+	defer d.stdinManager.Close(taskID)
+
+	// Wait for the process to complete.
+	result := <-done
+	exitCode := result.ExitCode
+	runErr := result.Err
 
 	// Determine outcome.
 	stdout := stdoutBuf.String()
@@ -696,6 +814,8 @@ func (d *Daemon) bufferOutput(taskID string, stdout, stderr string, exitCode int
 
 // streamingReporter is an io.Writer that sends output chunks to the server
 // as task messages while also writing to an inner buffer for final reporting.
+// When an InputDetector is attached, it feeds each output chunk to the detector
+// for input-waiting detection.
 type streamingReporter struct {
 	inner    io.Writer
 	client   HTTPClient
@@ -704,6 +824,7 @@ type streamingReporter struct {
 	stream   string // "stdout" or "stderr"
 	sequence *int
 	logger   *slog.Logger
+	detector *InputDetector // optional: input detection on output chunks
 }
 
 func (s *streamingReporter) Write(p []byte) (n int, err error) {
@@ -721,6 +842,11 @@ func (s *streamingReporter) Write(p []byte) (n int, err error) {
 		if reportErr := s.client.ReportMessages(s.ctx, s.taskID, []TaskMessage{msg}); reportErr != nil {
 			s.logger.Debug("failed to report task message", "error", reportErr)
 		}
+	}
+
+	// Feed output to the input detector for prompt pattern analysis.
+	if len(p) > 0 && s.detector != nil {
+		s.detector.OnOutput(string(p))
 	}
 
 	return n, err
@@ -946,6 +1072,15 @@ func isProcessRunning(pid int) bool {
 	return err == nil
 }
 
+// TaskStatusFromExitCode maps a process exit code to the task status string.
+// Exit code 0 means "completed"; any non-zero exit code means "failed".
+func TaskStatusFromExitCode(exitCode int) string {
+	if exitCode == 0 {
+		return "completed"
+	}
+	return "failed"
+}
+
 // resolveCustomArgs extracts custom arguments from the task's agent config.
 // Returns nil if no agent config is present or custom_args is empty.
 func resolveCustomArgs(task *PollResponse) []string {
@@ -953,4 +1088,66 @@ func resolveCustomArgs(task *PollResponse) []string {
 		return nil
 	}
 	return task.Agent.CustomArgs
+}
+
+// --- DaemonStateProvider implementation ---
+// These methods satisfy the DaemonStateProvider interface defined in health.go,
+// allowing the HealthServer to query daemon state without tight coupling.
+
+// GetDaemonID returns the daemon's unique identifier.
+func (d *Daemon) GetDaemonID() string {
+	return d.cfg.DaemonID
+}
+
+// GetDeviceName returns the machine's device name.
+func (d *Daemon) GetDeviceName() string {
+	return d.cfg.DeviceName
+}
+
+// GetServerURL returns the configured server URL.
+func (d *Daemon) GetServerURL() string {
+	return d.cfg.ServerURL
+}
+
+// GetCLIVersion returns the CLI version string.
+func (d *Daemon) GetCLIVersion() string {
+	return d.cfg.CLIVersion
+}
+
+// GetActiveTaskCount returns the number of currently executing tasks.
+func (d *Daemon) GetActiveTaskCount() int64 {
+	return d.activeTasks.Load()
+}
+
+// GetAgents returns the list of detected agent runtimes.
+func (d *Daemon) GetAgents() []AgentInfo {
+	agents := make([]AgentInfo, 0, len(d.cfg.Agents))
+	for name, entry := range d.cfg.Agents {
+		agents = append(agents, AgentInfo{
+			Name:    name,
+			Version: entry.Version,
+			Path:    entry.Path,
+		})
+	}
+	return agents
+}
+
+// GetStartTime returns when the daemon started.
+func (d *Daemon) GetStartTime() time.Time {
+	return d.startTime
+}
+
+// BuildHeartbeatRequest constructs the heartbeat payload from the current daemon state.
+// This is extracted as a public method to enable property-based testing of payload completeness.
+func (d *Daemon) BuildHeartbeatRequest() HeartbeatRequest {
+	runtimeNames := make([]string, 0, len(d.cfg.Agents))
+	for name := range d.cfg.Agents {
+		runtimeNames = append(runtimeNames, name)
+	}
+
+	return HeartbeatRequest{
+		DaemonID:    d.cfg.DaemonID,
+		Runtimes:    runtimeNames,
+		ActiveTasks: d.activeTasks.Load(),
+	}
 }

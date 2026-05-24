@@ -173,3 +173,11 @@ func (c *RealHTTPClient) ReportMessages(ctx context.Context, taskID string, mess
 	_, err := c.doJSON(ctx, "POST", "/api/daemon/tasks/"+taskID+"/messages", body)
 	return err
 }
+
+func (c *RealHTTPClient) ReportInputState(ctx context.Context, taskID string, state string) error {
+	body := map[string]interface{}{
+		"state": state,
+	}
+	_, err := c.doJSON(ctx, "POST", "/api/daemon/tasks/"+taskID+"/input-state", body)
+	return err
+}

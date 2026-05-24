@@ -20,6 +20,7 @@ type mockHTTPClient struct {
 	completeTaskCalls int
 	failTaskCalls  int
 	reportMsgCalls int
+	reportInputStateCalls int
 
 	registerResp *RegisterResponse
 	registerErr  error
@@ -31,6 +32,7 @@ type mockHTTPClient struct {
 	completeTaskErr error
 	failTaskErr  error
 	reportMsgErr error
+	reportInputStateErr error
 }
 
 func (m *mockHTTPClient) Register(_ context.Context, _ RegisterRequest) (*RegisterResponse, error) {
@@ -99,6 +101,13 @@ func (m *mockHTTPClient) ReportMessages(_ context.Context, _ string, _ []TaskMes
 	defer m.mu.Unlock()
 	m.reportMsgCalls++
 	return m.reportMsgErr
+}
+
+func (m *mockHTTPClient) ReportInputState(_ context.Context, _ string, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reportInputStateCalls++
+	return m.reportInputStateErr
 }
 
 func (m *mockHTTPClient) getHeartbeatCalls() int {

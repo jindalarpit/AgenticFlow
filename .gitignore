@@ -4,6 +4,8 @@ web/node_modules/
 
 # Build outputs
 server/bin/
+server/af
+server/server
 web/dist/
 *.exe
 *.dll

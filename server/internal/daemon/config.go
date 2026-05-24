@@ -26,6 +26,8 @@ type Config struct {
 	ServerURL          string
 	DaemonID           string
 	DeviceName         string
+	CLIVersion         string
+	HealthPort         int
 	Agents             map[string]AgentEntry
 	WorkspacesRoot     string
 	PollInterval       time.Duration
@@ -39,6 +41,8 @@ type Config struct {
 // the next precedence level is consulted.
 type Overrides struct {
 	ServerURL          *string
+	CLIVersion         *string
+	HealthPort         *int
 	PollInterval       *time.Duration
 	HeartbeatInterval  *time.Duration
 	AgentTimeout       *time.Duration
@@ -118,10 +122,29 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// --- Agents ---
 	agents := DetectAgents(nil)
 
+	// --- HealthPort ---
+	healthPort, err := resolveInt(
+		overrides.HealthPort,
+		os.Getenv("AF_DAEMON_HEALTH_PORT"),
+		0,
+		DefaultHealthPort,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve health_port: %w", err)
+	}
+
+	// --- CLIVersion ---
+	cliVersion := ""
+	if overrides.CLIVersion != nil {
+		cliVersion = *overrides.CLIVersion
+	}
+
 	return Config{
 		ServerURL:          serverURL,
 		DaemonID:           daemonID,
 		DeviceName:         deviceName,
+		CLIVersion:         cliVersion,
+		HealthPort:         healthPort,
 		Agents:             agents,
 		WorkspacesRoot:     workspacesRoot,
 		PollInterval:       pollInterval,

@@ -2,8 +2,12 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +154,9 @@ func (m *mockPollClient) StartTask(_ context.Context, _ string) error           
 func (m *mockPollClient) CompleteTask(_ context.Context, _ string, _ string, _ int) error { return nil }
 func (m *mockPollClient) FailTask(_ context.Context, _ string, _ string, _ int) error     { return nil }
 func (m *mockPollClient) ReportMessages(_ context.Context, _ string, _ []TaskMessage) error {
+	return nil
+}
+func (m *mockPollClient) ReportInputState(_ context.Context, _ string, _ string) error {
 	return nil
 }
 
@@ -342,6 +349,472 @@ func TestProperty_OutputTruncation(t *testing.T) {
 			if stderrResult != expectedTail {
 				t.Fatalf("tailBuffer: captured content is not the last %d characters of input",
 					maxStderrChars)
+			}
+		}
+	})
+}
+
+// --- Mock infrastructure for heartbeat failure escalation tests ---
+
+// heartbeatOutcome represents whether a heartbeat interval succeeds or fails.
+type heartbeatOutcome bool
+
+const (
+	heartbeatSuccess heartbeatOutcome = true
+	heartbeatFailure heartbeatOutcome = false
+)
+
+// sequentialHeartbeatClient is a mock HTTPClient that returns success or failure
+// for each heartbeat call based on a pre-defined sequence. Each call to Heartbeat
+// consumes the next outcome in the sequence. When all retries within a single
+// sendHeartbeat call fail, the interval counts as a failure.
+type sequentialHeartbeatClient struct {
+	// failAll controls whether ALL retries within a sendHeartbeat call fail.
+	// When true, every Heartbeat() call returns an error.
+	// When false, the first Heartbeat() call succeeds.
+	outcomes []heartbeatOutcome
+	idx      int
+	mu       sync.Mutex
+}
+
+func (s *sequentialHeartbeatClient) currentOutcome() heartbeatOutcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idx >= len(s.outcomes) {
+		return heartbeatSuccess // default to success if we run out
+	}
+	return s.outcomes[s.idx]
+}
+
+func (s *sequentialHeartbeatClient) advance() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.idx++
+}
+
+func (s *sequentialHeartbeatClient) Register(_ context.Context, _ RegisterRequest) (*RegisterResponse, error) {
+	return &RegisterResponse{RuntimeIDs: map[string]string{"claude": "rt-1"}}, nil
+}
+func (s *sequentialHeartbeatClient) Deregister(_ context.Context, _ DeregisterRequest) error {
+	return nil
+}
+func (s *sequentialHeartbeatClient) Heartbeat(_ context.Context, _ HeartbeatRequest) error {
+	// The outcome is determined by the current interval's outcome.
+	// If the current interval should fail, ALL retries fail.
+	// If the current interval should succeed, the first call succeeds.
+	outcome := s.currentOutcome()
+	if outcome == heartbeatFailure {
+		return fmt.Errorf("heartbeat failed (simulated)")
+	}
+	return nil
+}
+func (s *sequentialHeartbeatClient) PollTasks(_ context.Context, _ PollRequest) (*PollResponse, error) {
+	return nil, nil
+}
+func (s *sequentialHeartbeatClient) StartTask(_ context.Context, _ string) error { return nil }
+func (s *sequentialHeartbeatClient) CompleteTask(_ context.Context, _ string, _ string, _ int) error {
+	return nil
+}
+func (s *sequentialHeartbeatClient) FailTask(_ context.Context, _ string, _ string, _ int) error {
+	return nil
+}
+func (s *sequentialHeartbeatClient) ReportMessages(_ context.Context, _ string, _ []TaskMessage) error {
+	return nil
+}
+func (s *sequentialHeartbeatClient) ReportInputState(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
+// logRecord captures a single log entry's level and message.
+type logRecord struct {
+	Level   slog.Level
+	Message string
+}
+
+// capturingHandler is a slog.Handler that captures all log records for inspection.
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []logRecord
+}
+
+func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, logRecord{Level: r.Level, Message: r.Message})
+	return nil
+}
+func (h *capturingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *capturingHandler) getRecords() []logRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	result := make([]logRecord, len(h.records))
+	copy(result, h.records)
+	return result
+}
+
+func (h *capturingHandler) reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = nil
+}
+
+// Feature: cli-auth-daemon, Property 11: Consecutive heartbeat failure escalation
+// For any sequence of heartbeat attempts, error log emitted iff 3+ consecutive failures.
+// **Validates: Requirements 10.4**
+func TestProperty_ConsecutiveHeartbeatFailureEscalation(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate a random sequence of heartbeat outcomes (success/failure).
+		// Length between 1 and 20 to keep tests fast.
+		seqLen := rapid.IntRange(1, 20).Draw(t, "sequenceLength")
+		outcomes := make([]heartbeatOutcome, seqLen)
+		for i := 0; i < seqLen; i++ {
+			if rapid.Bool().Draw(t, fmt.Sprintf("outcome_%d", i)) {
+				outcomes[i] = heartbeatSuccess
+			} else {
+				outcomes[i] = heartbeatFailure
+			}
+		}
+
+		// Set up the daemon with a capturing log handler.
+		handler := &capturingHandler{}
+		logger := slog.New(handler)
+
+		d := New(Config{
+			DaemonID:           "test-daemon",
+			DeviceName:         "test-device",
+			PollInterval:       3 * time.Second,
+			HeartbeatInterval:  15 * time.Second,
+			AgentTimeout:       2 * time.Hour,
+			MaxConcurrentTasks: 5,
+		}, logger)
+
+		// Use a very short retry delay so tests run fast.
+		d.heartbeatRetryDelay = 1 * time.Millisecond
+
+		// Create the mock client.
+		mock := &sequentialHeartbeatClient{outcomes: outcomes}
+		d.SetClient(mock)
+
+		ctx := context.Background()
+
+		// Track expected consecutive failures manually.
+		expectedConsecutiveFailures := 0
+
+		for i, outcome := range outcomes {
+			// Reset captured logs before each sendHeartbeat call.
+			handler.reset()
+
+			// Set the mock to the current interval's outcome.
+			mock.mu.Lock()
+			mock.idx = i
+			mock.mu.Unlock()
+
+			// Call sendHeartbeat.
+			d.sendHeartbeat(ctx)
+
+			// Update expected consecutive failures.
+			if outcome == heartbeatSuccess {
+				expectedConsecutiveFailures = 0
+			} else {
+				expectedConsecutiveFailures++
+			}
+
+			// Verify the consecutive failure counter matches.
+			actual := d.ConsecutiveHeartbeatFailures()
+			if actual != expectedConsecutiveFailures {
+				t.Fatalf("after interval %d (outcome=%v): expected consecutiveHeartbeatFailures=%d, got=%d",
+					i, outcome, expectedConsecutiveFailures, actual)
+			}
+
+			// Verify log level escalation property:
+			// Error log emitted iff 3+ consecutive failures.
+			records := handler.getRecords()
+
+			if outcome == heartbeatFailure {
+				// A failure interval should produce a log entry about the failure.
+				hasErrorLog := false
+				hasWarnLog := false
+				for _, rec := range records {
+					if rec.Level == slog.LevelError && strings.Contains(rec.Message, "connectivity loss") {
+						hasErrorLog = true
+					}
+					if rec.Level == slog.LevelWarn && strings.Contains(rec.Message, "heartbeat failed after all retries") {
+						hasWarnLog = true
+					}
+				}
+
+				if expectedConsecutiveFailures >= 3 {
+					// Property: error log MUST be emitted at 3+ consecutive failures.
+					if !hasErrorLog {
+						t.Fatalf("after interval %d: expected error log at %d consecutive failures, but none found. Logs: %v",
+							i, expectedConsecutiveFailures, records)
+					}
+				} else {
+					// Property: error log MUST NOT be emitted at fewer than 3 consecutive failures.
+					if hasErrorLog {
+						t.Fatalf("after interval %d: unexpected error log at %d consecutive failures (< 3). Logs: %v",
+							i, expectedConsecutiveFailures, records)
+					}
+					// Should have a warning instead.
+					if !hasWarnLog {
+						t.Fatalf("after interval %d: expected warning log at %d consecutive failures, but none found. Logs: %v",
+							i, expectedConsecutiveFailures, records)
+					}
+				}
+			}
+		}
+	})
+}
+
+// Feature: cli-auth-daemon, Property 7: Exit code to task status mapping
+// For any exit code, status is "completed" if 0, "failed" otherwise.
+// **Validates: Requirements 9.5, 9.6**
+func TestProperty_ExitCodeToTaskStatusMapping(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate any integer exit code (including negative values and large values).
+		exitCode := rapid.IntRange(-128, 255).Draw(t, "exitCode")
+
+		status := TaskStatusFromExitCode(exitCode)
+
+		if exitCode == 0 {
+			// Property: exit code 0 SHALL produce status "completed".
+			if status != "completed" {
+				t.Fatalf("exit code 0 should produce 'completed', got %q", status)
+			}
+		} else {
+			// Property: any non-zero exit code SHALL produce status "failed".
+			if status != "failed" {
+				t.Fatalf("exit code %d should produce 'failed', got %q", exitCode, status)
+			}
+		}
+	})
+}
+
+// Feature: cli-auth-daemon, Property 9: Concurrency limit enforcement
+// For any max_concurrent_tasks N, daemon never has more than N tasks executing simultaneously.
+// **Validates: Requirements 9.8**
+func TestProperty_ConcurrencyLimitEnforcement(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate a random max concurrent tasks limit (1-8).
+		maxConcurrent := rapid.IntRange(1, 8).Draw(t, "maxConcurrentTasks")
+
+		// Generate the number of sequential poll attempts (more than maxConcurrent).
+		pollAttempts := rapid.IntRange(maxConcurrent+1, maxConcurrent*3).Draw(t, "pollAttempts")
+
+		// peakTracker records the maximum activeTasks observed during PollTasks calls.
+		peakTracker := &peakActiveTracker{}
+
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		d := New(Config{
+			DaemonID:           "test-daemon",
+			DeviceName:         "test-device",
+			PollInterval:       3 * time.Second,
+			HeartbeatInterval:  15 * time.Second,
+			AgentTimeout:       2 * time.Hour,
+			MaxConcurrentTasks: maxConcurrent,
+			Agents: map[string]AgentEntry{
+				"test-agent": {Name: "test-agent", Path: "/bin/echo", Version: "1.0.0"},
+			},
+		}, logger)
+
+		// Use a mock client that always returns a task and records the
+		// activeTasks value at the moment PollTasks is called.
+		mock := &concurrencyLimitClient{
+			daemon:      d,
+			peakTracker: peakTracker,
+		}
+		d.SetClient(mock)
+
+		// Register a runtime so polling doesn't skip due to empty runtimes.
+		d.mu.Lock()
+		d.runtimes = map[string]string{"rt-1": "test-agent"}
+		d.mu.Unlock()
+
+		ctx := context.Background()
+
+		// Call pollForTasks sequentially many times. Each successful poll
+		// increments activeTasks and spawns a goroutine (which will fail
+		// quickly since the binary path is just "/bin/echo" with no proper
+		// args, but the increment happens BEFORE the goroutine runs).
+		// The property: at no point should activeTasks exceed maxConcurrent.
+		for i := 0; i < pollAttempts; i++ {
+			d.pollForTasks(ctx)
+
+			// Check the invariant after each poll.
+			current := d.activeTasks.Load()
+			if current > int64(maxConcurrent) {
+				t.Fatalf("concurrency limit violated after poll %d: activeTasks=%d > maxConcurrentTasks=%d",
+					i, current, maxConcurrent)
+			}
+		}
+
+		// Wait for any spawned task goroutines to complete.
+		time.Sleep(50 * time.Millisecond)
+
+		// Verify the peak observed during PollTasks calls never exceeded the limit.
+		peak := peakTracker.Peak()
+		if peak > int64(maxConcurrent) {
+			t.Fatalf("concurrency limit violated: peak activeTasks observed=%d > maxConcurrentTasks=%d",
+				peak, maxConcurrent)
+		}
+
+		// Additional invariant: after all tasks complete, activeTasks should be 0.
+		// (Give tasks time to finish — they fail fast since /bin/echo exits immediately.)
+		time.Sleep(50 * time.Millisecond)
+		final := d.activeTasks.Load()
+		if final < 0 {
+			t.Fatalf("activeTasks went negative: %d (indicates double-decrement bug)", final)
+		}
+	})
+}
+
+// peakActiveTracker records the maximum value observed via Record calls.
+type peakActiveTracker struct {
+	peak atomic.Int64
+}
+
+func (p *peakActiveTracker) Record(val int64) {
+	for {
+		current := p.peak.Load()
+		if val <= current {
+			return
+		}
+		if p.peak.CompareAndSwap(current, val) {
+			return
+		}
+	}
+}
+
+func (p *peakActiveTracker) Peak() int64 {
+	return p.peak.Load()
+}
+
+// concurrencyLimitClient is a mock HTTPClient that always returns a task
+// and records the daemon's activeTasks at the moment of each PollTasks call.
+type concurrencyLimitClient struct {
+	daemon      *Daemon
+	peakTracker *peakActiveTracker
+	taskCounter atomic.Int64
+}
+
+func (c *concurrencyLimitClient) Register(_ context.Context, _ RegisterRequest) (*RegisterResponse, error) {
+	return &RegisterResponse{RuntimeIDs: map[string]string{"test-agent": "rt-1"}}, nil
+}
+func (c *concurrencyLimitClient) Deregister(_ context.Context, _ DeregisterRequest) error { return nil }
+func (c *concurrencyLimitClient) Heartbeat(_ context.Context, _ HeartbeatRequest) error   { return nil }
+func (c *concurrencyLimitClient) PollTasks(_ context.Context, _ PollRequest) (*PollResponse, error) {
+	// Record the current activeTasks at the moment of polling.
+	// This captures the state just before a new task would be added.
+	if c.daemon != nil {
+		c.peakTracker.Record(c.daemon.activeTasks.Load())
+	}
+	id := c.taskCounter.Add(1)
+	return &PollResponse{
+		TaskID:    fmt.Sprintf("task-%d", id),
+		AgentType: "test-agent",
+		Prompt:    "test prompt",
+	}, nil
+}
+func (c *concurrencyLimitClient) StartTask(_ context.Context, _ string) error { return nil }
+func (c *concurrencyLimitClient) CompleteTask(_ context.Context, _ string, _ string, _ int) error {
+	return nil
+}
+func (c *concurrencyLimitClient) FailTask(_ context.Context, _ string, _ string, _ int) error {
+	return nil
+}
+func (c *concurrencyLimitClient) ReportMessages(_ context.Context, _ string, _ []TaskMessage) error {
+	return nil
+}
+func (c *concurrencyLimitClient) ReportInputState(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
+// Feature: cli-auth-daemon, Property 10: Heartbeat payload completeness
+// For any daemon state, heartbeat payload contains daemon_id, all runtime names, and exact active task count.
+// **Validates: Requirements 10.2**
+func TestProperty_HeartbeatPayloadCompleteness(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate a random daemon ID.
+		daemonID := rapid.StringMatching(`[a-f0-9]{16,32}`).Draw(t, "daemonID")
+
+		// Generate a random set of agent runtimes (0 to 10 agents).
+		numAgents := rapid.IntRange(0, 10).Draw(t, "numAgents")
+		agents := make(map[string]AgentEntry, numAgents)
+		agentNames := make([]string, 0, numAgents)
+		for i := 0; i < numAgents; i++ {
+			name := rapid.SampledFrom([]string{
+				"claude", "gemini", "codex", "copilot", "opencode",
+				"kiro", "cursor", "hermes", "pi", "kimi", "aider",
+			}).Draw(t, fmt.Sprintf("agentName_%d", i))
+			// Avoid duplicate names by appending index if already present.
+			uniqueName := name
+			if _, exists := agents[uniqueName]; exists {
+				uniqueName = fmt.Sprintf("%s_%d", name, i)
+			}
+			agents[uniqueName] = AgentEntry{
+				Name:    uniqueName,
+				Path:    fmt.Sprintf("/usr/local/bin/%s", uniqueName),
+				Version: rapid.SampledFrom([]string{"1.0.0", "2.3.1", "0.1.0-beta", "unknown"}).Draw(t, fmt.Sprintf("agentVersion_%d", i)),
+			}
+			agentNames = append(agentNames, uniqueName)
+		}
+
+		// Generate a random active task count (0 to 20).
+		activeTasks := int64(rapid.IntRange(0, 20).Draw(t, "activeTasks"))
+
+		// Create a daemon with the generated state.
+		logger := slog.New(slog.NewTextHandler(nil, nil))
+		d := New(Config{
+			DaemonID:           daemonID,
+			DeviceName:         "test-device",
+			PollInterval:       3 * time.Second,
+			HeartbeatInterval:  15 * time.Second,
+			AgentTimeout:       2 * time.Hour,
+			MaxConcurrentTasks: 5,
+			Agents:             agents,
+		}, logger)
+
+		// Set the active tasks count.
+		d.activeTasks.Store(activeTasks)
+
+		// Build the heartbeat request.
+		req := d.BuildHeartbeatRequest()
+
+		// Property 1: daemon_id must match exactly.
+		if req.DaemonID != daemonID {
+			t.Fatalf("heartbeat DaemonID mismatch: got %q, want %q", req.DaemonID, daemonID)
+		}
+
+		// Property 2: active task count must match exactly.
+		if req.ActiveTasks != activeTasks {
+			t.Fatalf("heartbeat ActiveTasks mismatch: got %d, want %d", req.ActiveTasks, activeTasks)
+		}
+
+		// Property 3: runtimes must contain ALL agent names (no missing, no extras).
+		if len(req.Runtimes) != len(agents) {
+			t.Fatalf("heartbeat Runtimes count mismatch: got %d, want %d", len(req.Runtimes), len(agents))
+		}
+
+		// Build a set of runtime names from the request for lookup.
+		runtimeSet := make(map[string]bool, len(req.Runtimes))
+		for _, name := range req.Runtimes {
+			runtimeSet[name] = true
+		}
+
+		// Every configured agent name must appear in the heartbeat runtimes.
+		for name := range agents {
+			if !runtimeSet[name] {
+				t.Fatalf("heartbeat Runtimes missing agent %q; got %v", name, req.Runtimes)
+			}
+		}
+
+		// Every runtime in the heartbeat must correspond to a configured agent.
+		for _, name := range req.Runtimes {
+			if _, exists := agents[name]; !exists {
+				t.Fatalf("heartbeat Runtimes contains unexpected agent %q; configured agents: %v", name, agentNames)
 			}
 		}
 	})

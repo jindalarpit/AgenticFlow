@@ -458,3 +458,203 @@ func TestRun_EnvironmentVariables(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", got, "hello_from_env\n")
 	}
 }
+
+func TestRunWithStdin_ReturnsStdinPipe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "task-stdin")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a script that reads from stdin and echoes it.
+	script := filepath.Join(tmpDir, "read_stdin.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nread line\necho \"got: $line\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &ExecEnv{
+		TaskID:       "task-stdin",
+		WorkspaceDir: wsDir,
+		BinaryPath:   script,
+		Prompt:       "",
+		ArgsTemplate: "",
+		EnvVars:      map[string]string{},
+		Logger:       testLogger(),
+	}
+
+	var stdout, stderr bytes.Buffer
+	stdinPipe, done, err := env.RunWithStdin(context.Background(), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunWithStdin() error: %v", err)
+	}
+	if stdinPipe == nil {
+		t.Fatal("expected non-nil stdin pipe")
+	}
+
+	// Write to stdin pipe.
+	_, err = stdinPipe.Write([]byte("hello world\n"))
+	if err != nil {
+		t.Fatalf("stdin write error: %v", err)
+	}
+
+	// Wait for process to complete.
+	select {
+	case result := <-done:
+		if result.ExitCode != 0 {
+			t.Errorf("exit code = %d, want 0; stderr: %s", result.ExitCode, stderr.String())
+		}
+		if got := stdout.String(); got != "got: hello world\n" {
+			t.Errorf("stdout = %q, want %q", got, "got: hello world\n")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunWithStdin process did not complete within 5s")
+	}
+}
+
+func TestRunWithStdin_ContextCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "task-stdin-cancel")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &ExecEnv{
+		TaskID:       "task-stdin-cancel",
+		WorkspaceDir: wsDir,
+		BinaryPath:   "/bin/sleep",
+		Prompt:       "",
+		ArgsTemplate: "60",
+		EnvVars:      map[string]string{},
+		Logger:       testLogger(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var stdout, stderr bytes.Buffer
+	stdinPipe, done, err := env.RunWithStdin(ctx, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunWithStdin() error: %v", err)
+	}
+	if stdinPipe == nil {
+		t.Fatal("expected non-nil stdin pipe")
+	}
+
+	// Give the process time to start.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case result := <-done:
+		if result.Err != context.Canceled {
+			t.Errorf("RunWithStdin() error = %v, want context.Canceled", result.Err)
+		}
+		if result.ExitCode == 0 {
+			t.Error("expected non-zero exit code after cancellation")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("RunWithStdin process did not complete after context cancellation within 15s")
+	}
+}
+
+func TestRunWithStdin_NonZeroExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "task-stdin-fail")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a script that exits with code 7.
+	script := filepath.Join(tmpDir, "fail.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &ExecEnv{
+		TaskID:       "task-stdin-fail",
+		WorkspaceDir: wsDir,
+		BinaryPath:   script,
+		Prompt:       "",
+		ArgsTemplate: "",
+		EnvVars:      map[string]string{},
+		Logger:       testLogger(),
+	}
+
+	var stdout, stderr bytes.Buffer
+	stdinPipe, done, err := env.RunWithStdin(context.Background(), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunWithStdin() error: %v", err)
+	}
+	if stdinPipe == nil {
+		t.Fatal("expected non-nil stdin pipe")
+	}
+
+	select {
+	case result := <-done:
+		if result.ExitCode != 7 {
+			t.Errorf("exit code = %d, want 7", result.ExitCode)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunWithStdin process did not complete within 5s")
+	}
+}
+
+func TestRunWithStdin_EnvironmentVariables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "task-stdin-env")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a script that prints an env var.
+	script := filepath.Join(tmpDir, "print_env.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$STDIN_TEST_VAR\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := &ExecEnv{
+		TaskID:       "task-stdin-env",
+		WorkspaceDir: wsDir,
+		BinaryPath:   script,
+		Prompt:       "",
+		ArgsTemplate: "",
+		EnvVars:      map[string]string{"STDIN_TEST_VAR": "stdin_env_value"},
+		Logger:       testLogger(),
+	}
+
+	var stdout, stderr bytes.Buffer
+	stdinPipe, done, err := env.RunWithStdin(context.Background(), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunWithStdin() error: %v", err)
+	}
+	if stdinPipe == nil {
+		t.Fatal("expected non-nil stdin pipe")
+	}
+
+	select {
+	case result := <-done:
+		if result.ExitCode != 0 {
+			t.Errorf("exit code = %d, want 0", result.ExitCode)
+		}
+		if got := stdout.String(); got != "stdin_env_value\n" {
+			t.Errorf("stdout = %q, want %q", got, "stdin_env_value\n")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunWithStdin process did not complete within 5s")
+	}
+}

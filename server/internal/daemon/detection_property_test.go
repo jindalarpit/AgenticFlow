@@ -303,6 +303,169 @@ func TestProperty_AgentDeregistrationEqualsScanDifference(t *testing.T) {
 	})
 }
 
+// Feature: cli-auth-daemon, Property 6: Agent detection correctness
+// For any subset of known agents on PATH/env, DetectAgents returns exactly those findable;
+// custom path to non-existent file skips; failed version → "unknown".
+// Validates: Requirements 8.1, 8.2, 8.4, 8.6
+func TestProperty_AgentDetectionCorrectness(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// For each known agent, generate a detection scenario:
+		// - pathAvailable: whether the binary is on PATH
+		// - customPathSet: whether AF_<NAME>_PATH env var is set
+		// - customPathExists: whether the custom path points to an existing file
+		// - versionSucceeds: whether version detection succeeds
+		type scenario struct {
+			pathAvailable    bool
+			customPathSet    bool
+			customPathExists bool
+			versionSucceeds  bool
+			versionOutput    string
+		}
+
+		// Generate a random subset of agents to be available via different mechanisms.
+		scenarios := make(map[string]scenario)
+		for _, ag := range knownAgents {
+			scenarios[ag.Name] = scenario{
+				pathAvailable:    rapid.Bool().Draw(t, ag.Name+"-path"),
+				customPathSet:    rapid.Bool().Draw(t, ag.Name+"-customSet"),
+				customPathExists: rapid.Bool().Draw(t, ag.Name+"-customExists"),
+				versionSucceeds:  rapid.Bool().Draw(t, ag.Name+"-versionOK"),
+				versionOutput:    rapid.StringMatching(`[a-z0-9.]{1,20}`).Draw(t, ag.Name+"-versionStr"),
+			}
+		}
+
+		// Build injectable dependencies.
+		deps := &DetectionDeps{
+			LookPath: func(file string) (string, error) {
+				for _, ag := range knownAgents {
+					if ag.Command == file {
+						s := scenarios[ag.Name]
+						if s.pathAvailable {
+							return "/path/bin/" + file, nil
+						}
+						return "", errors.New("not found on PATH")
+					}
+				}
+				return "", errors.New("unknown command")
+			},
+			Getenv: func(key string) string {
+				for _, ag := range knownAgents {
+					if ag.EnvPath == key {
+						s := scenarios[ag.Name]
+						if s.customPathSet {
+							return "/custom/bin/" + ag.Name
+						}
+						return ""
+					}
+					if ag.EnvModel == key {
+						return ""
+					}
+				}
+				return ""
+			},
+			Stat: func(name string) (os.FileInfo, error) {
+				for _, ag := range knownAgents {
+					if name == "/custom/bin/"+ag.Name {
+						s := scenarios[ag.Name]
+						if s.customPathExists {
+							return fakeFileInfo{isDir: false}, nil
+						}
+						return nil, os.ErrNotExist
+					}
+				}
+				return nil, os.ErrNotExist
+			},
+			DetectVersion: func(ctx context.Context, binaryPath string) (string, error) {
+				for _, ag := range knownAgents {
+					pathBin := "/path/bin/" + ag.Command
+					customBin := "/custom/bin/" + ag.Name
+					if binaryPath == pathBin || binaryPath == customBin {
+						s := scenarios[ag.Name]
+						if s.versionSucceeds {
+							return s.versionOutput, nil
+						}
+						return "", errors.New("version detection failed")
+					}
+				}
+				return "", errors.New("unknown binary")
+			},
+		}
+
+		// Execute detection.
+		result := DetectAgents(deps)
+
+		// Verify each agent's detection outcome.
+		for _, ag := range knownAgents {
+			s := scenarios[ag.Name]
+			entry, detected := result[ag.Name]
+
+			// Determine if the agent should be findable:
+			// (a) Custom path set AND exists → detected with custom path
+			// (b) Custom path set AND does NOT exist → skipped (Req 8.6)
+			// (c) No custom path AND on PATH → detected with PATH path (Req 8.1)
+			// (d) No custom path AND not on PATH → not detected
+			shouldDetect := false
+			var expectedPath string
+
+			if s.customPathSet {
+				if s.customPathExists {
+					// (a) Custom path valid → detected (Req 8.2)
+					shouldDetect = true
+					expectedPath = "/custom/bin/" + ag.Name
+				}
+				// (b) Custom path invalid → skipped regardless of PATH (Req 8.6)
+			} else if s.pathAvailable {
+				// (c) On PATH → detected (Req 8.1)
+				shouldDetect = true
+				expectedPath = "/path/bin/" + ag.Command
+			}
+
+			if shouldDetect && !detected {
+				t.Fatalf("agent %q should be detected but was not (customPathSet=%v, customPathExists=%v, pathAvailable=%v)",
+					ag.Name, s.customPathSet, s.customPathExists, s.pathAvailable)
+			}
+			if !shouldDetect && detected {
+				t.Fatalf("agent %q should NOT be detected but was (customPathSet=%v, customPathExists=%v, pathAvailable=%v)",
+					ag.Name, s.customPathSet, s.customPathExists, s.pathAvailable)
+			}
+
+			if detected {
+				// Verify path correctness.
+				if entry.Path != expectedPath {
+					t.Fatalf("agent %q: expected path %q, got %q", ag.Name, expectedPath, entry.Path)
+				}
+
+				// Verify version behavior (Req 8.4): failed version → "unknown"
+				if !s.versionSucceeds {
+					if entry.Version != "unknown" {
+						t.Fatalf("agent %q: version detection failed, expected 'unknown', got %q",
+							ag.Name, entry.Version)
+					}
+				} else {
+					if entry.Version != s.versionOutput {
+						t.Fatalf("agent %q: expected version %q, got %q",
+							ag.Name, s.versionOutput, entry.Version)
+					}
+				}
+			}
+		}
+
+		// Verify no spurious agents in result (only known agents can appear).
+		for name := range result {
+			found := false
+			for _, ag := range knownAgents {
+				if ag.Name == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("unexpected agent %q in detection results", name)
+			}
+		}
+	})
+}
+
 // fakeFileInfo is already defined in detection_test.go in the same package,
 // so we reuse it here for property tests.
 var _ os.FileInfo = fakeFileInfo{}

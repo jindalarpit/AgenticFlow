@@ -22,7 +22,7 @@ export interface TaskMessage {
   id: string;
   task_id: string;
   sequence: number;
-  stream: "stdout" | "stderr";
+  stream: "stdout" | "stderr" | "stdin";
   content: string;
   created_at: string;
 }
