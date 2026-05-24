@@ -5,8 +5,7 @@ import { ToastProvider } from "./components/Toast";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import TaskDetail from "./pages/TaskDetail";
-import AgentList from "./pages/AgentList";
-import AgentForm from "./pages/AgentForm";
+import AgentsPage from "./pages/AgentsPage";
 import AgentDetail from "./pages/AgentDetail";
 import Settings from "./pages/Settings";
 
@@ -59,17 +58,7 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Layout>
-                  <AgentList />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/agents/new"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <AgentForm />
+                  <AgentsPage />
                 </Layout>
               </ProtectedRoute>
             }

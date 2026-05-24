@@ -80,3 +80,31 @@ SELECT
 FROM task
 WHERE agent_id = $1
   AND completed_at > now() - INTERVAL '30 days';
+
+-- name: GetAgentsRunCounts30d :many
+-- Returns 30-day completed task count per agent for all agents that have
+-- at least one completed task in the last 30 days.
+SELECT
+    agent_id,
+    COUNT(*)::bigint AS run_count
+FROM task
+WHERE status = 'completed'
+  AND completed_at > now() - INTERVAL '30 days'
+  AND agent_id IS NOT NULL
+GROUP BY agent_id;
+
+-- name: GetAgentsActivity7d :many
+-- Returns 7-day daily task completion and failure counts grouped by agent_id.
+-- Each row represents one day for one agent. Only agents with at least one
+-- completed or failed task in the last 7 days are included.
+SELECT
+    agent_id,
+    completed_at::date AS activity_date,
+    COALESCE(COUNT(*) FILTER (WHERE status = 'completed'), 0)::bigint AS completed,
+    COALESCE(COUNT(*) FILTER (WHERE status = 'failed'), 0)::bigint AS failed
+FROM task
+WHERE agent_id IS NOT NULL
+  AND status IN ('completed', 'failed')
+  AND completed_at >= (CURRENT_DATE - INTERVAL '6 days')
+GROUP BY agent_id, completed_at::date
+ORDER BY agent_id, activity_date;

@@ -19,13 +19,22 @@ import (
 type contextKey int
 
 const (
-	ctxKeyUserID contextKey = iota
+	ctxKeyUserID  contextKey = iota
+	ctxKeyIsAdmin contextKey = iota
 )
 
 // ContextUserID extracts the authenticated user ID from the request context.
 func ContextUserID(ctx context.Context) string {
 	id, _ := ctx.Value(ctxKeyUserID).(string)
 	return id
+}
+
+// ContextIsAdmin returns whether the authenticated user has admin privileges.
+// In AgenticFlow's simple model, this currently always returns false.
+// It provides an extension point for future workspace admin role support.
+func ContextIsAdmin(ctx context.Context) bool {
+	admin, _ := ctx.Value(ctxKeyIsAdmin).(bool)
+	return admin
 }
 
 // WithUserID returns a new context with the given user ID set.

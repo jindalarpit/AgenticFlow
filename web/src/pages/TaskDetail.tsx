@@ -1,11 +1,22 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useTask, useTaskMessages, useCancelTask } from "../hooks/useTasks";
 import { useTaskStream } from "../hooks/useTaskStream";
+import { useTimeline } from "../hooks/useTimeline";
 import { useSessionState } from "../hooks/useSessionState";
 import { useQueryClient } from "@tanstack/react-query";
 import { wsClient, type WSEvent } from "../lib/ws";
 import { TaskInput } from "../components/TaskInput";
+import { formatCopyText } from "../lib/tool-chain-parser";
+import {
+  ViewModeToggle,
+  TimelineBar,
+  TimelineView,
+  FinalResultPanel,
+  FilterDropdown,
+  CopyButton,
+  MetadataChips,
+} from "../components/task-timeline";
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
@@ -56,6 +67,24 @@ export default function TaskDetail() {
   const queryClient = useQueryClient();
   const sessionState = useSessionState(taskId);
 
+  // View mode state: "structured" (default) or "raw"
+  const [viewMode, setViewMode] = useState<"structured" | "raw">("structured");
+
+  // Wire useTimeline hook with messages from useTaskStream
+  const {
+    items,
+    filteredItems,
+    filters,
+    toggleFilter,
+    clearFilters,
+    toolCallCount,
+    totalCount,
+    filterOptions,
+  } = useTimeline({ taskId, messages });
+
+  // State for timeline bar segment click → scroll to item
+  const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
+
   const outputRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
 
@@ -99,7 +128,7 @@ export default function TaskDetail() {
     };
   }, [taskId, queryClient]);
 
-  // Auto-scroll output to bottom
+  // Auto-scroll output to bottom (raw view)
   useEffect(() => {
     if (autoScrollRef.current && outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
@@ -145,6 +174,9 @@ export default function TaskDetail() {
   const isRunning = task.status === "running";
   const isTerminal = ["completed", "failed", "cancelled", "timeout"].includes(task.status);
 
+  // Prepare copy text from filtered items
+  const copyText = formatCopyText(filteredItems);
+
   return (
     <div>
       {/* Header */}
@@ -164,15 +196,29 @@ export default function TaskDetail() {
                 </span>
               )}
             </div>
-            {isRunning && (
-              <button
-                onClick={handleCancel}
-                disabled={cancelTask.isPending}
-                className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
-              >
-                {cancelTask.isPending ? "Cancelling…" : "Cancel"}
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              <ViewModeToggle taskId={taskId} mode={viewMode} onChange={setViewMode} />
+              {isRunning && (
+                <button
+                  onClick={handleCancel}
+                  disabled={cancelTask.isPending}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                >
+                  {cancelTask.isPending ? "Cancelling…" : "Cancel"}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Metadata Chips */}
+          <div className="mt-3">
+            <MetadataChips
+              toolCallCount={toolCallCount}
+              totalCount={totalCount}
+              taskStatus={task.status}
+              startedAt={task.started_at ?? undefined}
+              completedAt={task.completed_at ?? undefined}
+            />
           </div>
         </div>
       </div>
@@ -232,51 +278,100 @@ export default function TaskDetail() {
           </div>
         )}
 
-        {/* Terminal output */}
-        <div className="mt-4">
-          <div className="flex items-center justify-between rounded-t-lg border border-b-0 border-gray-700 bg-gray-800 px-4 py-2">
-            <span className="text-xs font-medium text-gray-300">Output</span>
-            {isRunning && (
-              <span className="flex items-center gap-1 text-xs text-green-400">
-                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-400" />
-                Streaming
-              </span>
-            )}
+        {/* Structured View */}
+        {viewMode === "structured" && (
+          <div className="mt-4 flex flex-col gap-3">
+            {/* Toolbar: Filter + Copy */}
+            <div className="flex items-center justify-between">
+              <FilterDropdown
+                options={filterOptions}
+                activeFilters={filters}
+                onToggle={toggleFilter}
+                onClear={clearFilters}
+                filteredCount={filteredItems.length}
+                totalCount={totalCount}
+              />
+              <CopyButton text={copyText} hasActiveFilters={filters.size > 0} />
+            </div>
+
+            {/* Timeline Bar */}
+            <TimelineBar
+              items={items}
+              selectedSeq={selectedSeq}
+              onSegmentClick={setSelectedSeq}
+            />
+
+            {/* Timeline View */}
+            <div className="h-[500px] flex flex-col rounded-lg border border-gray-200 bg-white p-3">
+              <TimelineView
+                items={filteredItems}
+                isLive={isRunning}
+              />
+            </div>
+
+            {/* Final Result Panel */}
+            <FinalResultPanel items={items} taskStatus={task.status} />
           </div>
-          <div
-            ref={outputRef}
-            onScroll={handleScroll}
-            className="h-96 overflow-y-auto rounded-b-lg border border-gray-700 bg-gray-900 p-4 font-mono text-sm leading-relaxed"
-          >
-            {messages.length === 0 && !isRunning && isTerminal && (
-              <p className="text-gray-500">No output recorded.</p>
-            )}
-            {messages.length === 0 && (task.status === "pending" || isRunning) && (
-              <p className="text-gray-500">Waiting for output…</p>
-            )}
-            {messages.map((msg) => (
-              <div
-                key={msg.sequence}
-                className={
-                  msg.stream === "stderr"
-                    ? "text-red-400"
-                    : msg.stream === "stdin"
-                      ? "text-green-400"
-                      : "text-gray-100"
-                }
-              >
-                <span className="whitespace-pre-wrap">
-                  {msg.stream === "stdin" ? `> ${msg.content}` : msg.content}
+        )}
+
+        {/* Raw View — existing terminal output */}
+        {viewMode === "raw" && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between rounded-t-lg border border-b-0 border-gray-700 bg-gray-800 px-4 py-2">
+              <span className="text-xs font-medium text-gray-300">Output</span>
+              {isRunning && (
+                <span className="flex items-center gap-1 text-xs text-green-400">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-400" />
+                  Streaming
                 </span>
-              </div>
-            ))}
+              )}
+            </div>
+            <div
+              ref={outputRef}
+              onScroll={handleScroll}
+              className="h-96 overflow-y-auto rounded-b-lg border border-gray-700 bg-gray-900 p-4 font-mono text-sm leading-relaxed"
+            >
+              {messages.length === 0 && !isRunning && isTerminal && (
+                <p className="text-gray-500">No output recorded.</p>
+              )}
+              {messages.length === 0 && (task.status === "pending" || isRunning) && (
+                <p className="text-gray-500">Waiting for output…</p>
+              )}
+              {messages.map((msg) => (
+                <div
+                  key={msg.sequence}
+                  className={
+                    msg.stream === "stderr"
+                      ? "text-red-400"
+                      : msg.stream === "stdin"
+                        ? "text-green-400"
+                        : "text-gray-100"
+                  }
+                >
+                  <span className="whitespace-pre-wrap">
+                    {msg.stream === "stdin" ? `> ${msg.content}` : msg.content}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <TaskInput
+              taskId={taskId}
+              isRunning={isRunning}
+              isWaitingForInput={sessionState === "waiting_for_input"}
+            />
           </div>
-          <TaskInput
-            taskId={taskId}
-            isRunning={isRunning}
-            isWaitingForInput={sessionState === "waiting_for_input"}
-          />
-        </div>
+        )}
+
+        {/* TaskInput for structured view (still need input capability) */}
+        {viewMode === "structured" && (
+          <div className="mt-2">
+            <TaskInput
+              taskId={taskId}
+              isRunning={isRunning}
+              isWaitingForInput={sessionState === "waiting_for_input"}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

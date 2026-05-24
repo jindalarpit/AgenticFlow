@@ -34,6 +34,16 @@ DELETE FROM agent WHERE id = $1 AND user_id = $2;
 SELECT COUNT(*) FROM task
 WHERE agent_id = $1 AND status = 'running';
 
+-- name: ArchiveAgent :one
+UPDATE agent SET archived_at = now(), updated_at = now()
+WHERE id = $1 AND (user_id = $2 OR $3::boolean = true)
+RETURNING *;
+
+-- name: RestoreAgent :one
+UPDATE agent SET archived_at = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: GetAgentByName :one
 SELECT * FROM agent WHERE user_id = $1 AND name = $2;
 

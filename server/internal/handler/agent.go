@@ -82,6 +82,7 @@ type AgentResponse struct {
 	Status             string            `json:"status"`
 	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
 	OwnerID            string            `json:"owner_id"`
+	ArchivedAt         *string           `json:"archived_at"`
 	CreatedAt          string            `json:"created_at"`
 	UpdatedAt          string            `json:"updated_at"`
 }
@@ -111,6 +112,10 @@ func toAgentResponse(a db.Agent) AgentResponse {
 	if a.AvatarUrl.Valid {
 		s := a.AvatarUrl.String
 		resp.AvatarURL = &s
+	}
+	if a.ArchivedAt.Valid {
+		s := a.ArchivedAt.Time.UTC().Format(time.RFC3339)
+		resp.ArchivedAt = &s
 	}
 	if len(a.CustomEnv) > 0 {
 		_ = json.Unmarshal(a.CustomEnv, &resp.CustomEnv)
@@ -652,6 +657,71 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/agents/{id}/restore — RestoreAgent
+// ---------------------------------------------------------------------------
+
+// RestoreAgent handles POST /api/agents/{id}/restore.
+// It clears the archived_at timestamp on an archived agent, effectively
+// restoring it to the active view. The agent must exist and be currently
+// archived. Broadcasts an agent_updated WebSocket event on success.
+func (h *AgentHandler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.ContextUserID(r.Context())
+	if userID == "" {
+		writeErrorJSON(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	agentID := chi.URLParam(r, "id")
+	if agentID == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	agentUUID, err := parseUUID(agentID)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid agent id format")
+		return
+	}
+
+	// Fetch the agent to validate it exists and is currently archived.
+	agent, err := h.Queries.GetAgent(r.Context(), agentUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeErrorJSON(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		slog.Error("restore agent: get agent failed", "agent_id", agentID, "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to get agent")
+		return
+	}
+
+	// Verify the agent is currently archived.
+	if !agent.ArchivedAt.Valid {
+		writeErrorJSON(w, http.StatusConflict, "agent is not archived")
+		return
+	}
+
+	// Restore the agent (set archived_at = NULL).
+	restored, err := h.Queries.RestoreAgent(r.Context(), agentUUID)
+	if err != nil {
+		slog.Error("restore agent: query failed", "agent_id", agentID, "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to restore agent")
+		return
+	}
+
+	slog.Info("agent restored", "agent_id", agentID, "user_id", userID)
+
+	resp := toAgentResponse(restored)
+
+	// Broadcast agent_updated event via WebSocket.
+	if h.Hub != nil {
+		h.Hub.BroadcastAgentUpdated(resp)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ---------------------------------------------------------------------------
 // DELETE /api/agents/{id} — DeleteAgent
 // ---------------------------------------------------------------------------
 
@@ -702,4 +772,95 @@ func (h *AgentHandler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/agents/{id}/archive — ArchiveAgent
+// ---------------------------------------------------------------------------
+
+// ArchiveAgent handles POST /api/agents/{id}/archive.
+// It soft-deletes the agent by setting archived_at = now(). The user must be
+// the agent's owner or a workspace admin. Already-archived agents are rejected
+// with 409 Conflict.
+func (h *AgentHandler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.ContextUserID(r.Context())
+	if userID == "" {
+		writeErrorJSON(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	agentID := chi.URLParam(r, "id")
+	if agentID == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	agentUUID, err := parseUUID(agentID)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid agent id format")
+		return
+	}
+
+	userUUID, err := parseUUID(userID)
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, "invalid user id")
+		return
+	}
+
+	// Fetch the agent to validate existence and check permissions.
+	agent, err := h.Queries.GetAgent(r.Context(), agentUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeErrorJSON(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		slog.Error("archive agent: get agent failed", "agent_id", agentID, "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to get agent")
+		return
+	}
+
+	// Check if agent is already archived.
+	if agent.ArchivedAt.Valid {
+		writeErrorJSON(w, http.StatusConflict, "agent is already archived")
+		return
+	}
+
+	// Permission check: user must be the agent owner or a workspace admin.
+	// In AgenticFlow's simple model, we treat the owner check as the primary
+	// permission gate. The isAdmin flag allows workspace admins to archive
+	// any agent.
+	isOwner := uuidToString(agent.UserID) == userID
+	isAdmin := middleware.ContextIsAdmin(r.Context())
+
+	if !isOwner && !isAdmin {
+		writeErrorJSON(w, http.StatusForbidden, "you do not have permission to archive this agent")
+		return
+	}
+
+	// Perform the archive.
+	archived, err := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
+		ID:      agentUUID,
+		UserID:  userUUID,
+		IsAdmin: isAdmin,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeErrorJSON(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		slog.Error("archive agent: query failed", "agent_id", agentID, "user_id", userID, "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to archive agent")
+		return
+	}
+
+	slog.Info("agent archived", "agent_id", agentID, "user_id", userID)
+
+	resp := toAgentResponse(archived)
+
+	// Broadcast agent_updated event via WebSocket with updated archived_at.
+	if h.Hub != nil {
+		h.Hub.BroadcastAgentUpdated(resp)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }

@@ -114,6 +114,44 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 	return i, err
 }
 
+const getAgentsRunCounts30d = `-- name: GetAgentsRunCounts30d :many
+SELECT
+    agent_id,
+    COUNT(*)::bigint AS run_count
+FROM task
+WHERE status = 'completed'
+  AND completed_at > now() - INTERVAL '30 days'
+  AND agent_id IS NOT NULL
+GROUP BY agent_id
+`
+
+type GetAgentsRunCounts30dRow struct {
+	AgentID  pgtype.UUID `json:"agent_id"`
+	RunCount int64       `json:"run_count"`
+}
+
+// Returns 30-day completed task count per agent for all agents that have
+// at least one completed task in the last 30 days.
+func (q *Queries) GetAgentsRunCounts30d(ctx context.Context) ([]GetAgentsRunCounts30dRow, error) {
+	rows, err := q.db.Query(ctx, getAgentsRunCounts30d)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAgentsRunCounts30dRow{}
+	for rows.Next() {
+		var i GetAgentsRunCounts30dRow
+		if err := rows.Scan(&i.AgentID, &i.RunCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAgentStats30d = `-- name: GetAgentStats30d :one
 SELECT
     COALESCE(COUNT(*) FILTER (WHERE status = 'completed'), 0)::bigint AS total_completed,
@@ -141,6 +179,55 @@ func (q *Queries) GetAgentStats30d(ctx context.Context, agentID pgtype.UUID) (Ge
 	var i GetAgentStats30dRow
 	err := row.Scan(&i.TotalCompleted, &i.TotalTerminal, &i.AvgDurationMs)
 	return i, err
+}
+
+const getAgentsActivity7d = `-- name: GetAgentsActivity7d :many
+SELECT
+    agent_id,
+    completed_at::date AS activity_date,
+    COALESCE(COUNT(*) FILTER (WHERE status = 'completed'), 0)::bigint AS completed,
+    COALESCE(COUNT(*) FILTER (WHERE status = 'failed'), 0)::bigint AS failed
+FROM task
+WHERE agent_id IS NOT NULL
+  AND status IN ('completed', 'failed')
+  AND completed_at >= (CURRENT_DATE - INTERVAL '6 days')
+GROUP BY agent_id, completed_at::date
+ORDER BY agent_id, activity_date
+`
+
+type GetAgentsActivity7dRow struct {
+	AgentID      pgtype.UUID `json:"agent_id"`
+	ActivityDate pgtype.Date `json:"activity_date"`
+	Completed    int64       `json:"completed"`
+	Failed       int64       `json:"failed"`
+}
+
+// Returns 7-day daily task completion and failure counts grouped by agent_id.
+// Each row represents one day for one agent. Only agents with at least one
+// completed or failed task in the last 7 days are included.
+func (q *Queries) GetAgentsActivity7d(ctx context.Context) ([]GetAgentsActivity7dRow, error) {
+	rows, err := q.db.Query(ctx, getAgentsActivity7d)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAgentsActivity7dRow{}
+	for rows.Next() {
+		var i GetAgentsActivity7dRow
+		if err := rows.Scan(
+			&i.AgentID,
+			&i.ActivityDate,
+			&i.Completed,
+			&i.Failed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getTaskByID = `-- name: GetTaskByID :one

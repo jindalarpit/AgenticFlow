@@ -114,6 +114,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 	userH.AgentStatusService = agentStatusSvc
 	patH := handler.NewPATHandler(queries, patCache)
 	agentH := handler.NewAgentHandler(queries, hub)
+	runtimeH := handler.NewRuntimeHandler(queries)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache))
 
@@ -126,13 +127,20 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		// Agent Runtimes (legacy endpoint).
 		r.Get("/api/agent-runtimes", userH.ListAgentRuntimes)
 
+		// Runtimes.
+		r.Get("/api/runtimes/{id}/models", runtimeH.ListRuntimeModels)
+
 		// Agents (full CRUD).
 		r.Post("/api/agents", agentH.CreateAgent)
 		r.Get("/api/agents", agentH.ListAgents)
+		r.Get("/api/agents/activity", agentH.GetAgentsActivity)
+		r.Get("/api/agents/run-counts", agentH.GetAgentsRunCounts)
 		r.Get("/api/agents/{id}", agentH.GetAgent)
 		r.Get("/api/agents/{id}/stats", agentH.GetAgentStats)
 		r.Put("/api/agents/{id}", agentH.UpdateAgent)
 		r.Delete("/api/agents/{id}", agentH.DeleteAgent)
+		r.Post("/api/agents/{id}/archive", agentH.ArchiveAgent)
+		r.Post("/api/agents/{id}/restore", agentH.RestoreAgent)
 
 		// Tasks.
 		r.Post("/api/tasks", userH.CreateTask)
