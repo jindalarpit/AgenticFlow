@@ -14,14 +14,14 @@ import (
 const createTaskMessage = `-- name: CreateTaskMessage :one
 INSERT INTO task_message (task_id, sequence, stream, content)
 VALUES ($1, $2, $3, $4)
-RETURNING id, task_id, sequence, stream, content, created_at
+RETURNING id, task_id, sequence, stream, content, type, tool, input, output, created_at
 `
 
 type CreateTaskMessageParams struct {
 	TaskID   pgtype.UUID `json:"task_id"`
 	Sequence int32       `json:"sequence"`
-	Stream   string      `json:"stream"`
-	Content  string      `json:"content"`
+	Stream   pgtype.Text `json:"stream"`
+	Content  pgtype.Text `json:"content"`
 }
 
 func (q *Queries) CreateTaskMessage(ctx context.Context, arg CreateTaskMessageParams) (TaskMessage, error) {
@@ -38,6 +38,10 @@ func (q *Queries) CreateTaskMessage(ctx context.Context, arg CreateTaskMessagePa
 		&i.Sequence,
 		&i.Stream,
 		&i.Content,
+		&i.Type,
+		&i.Tool,
+		&i.Input,
+		&i.Output,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -47,14 +51,14 @@ const createTaskMessageIdempotent = `-- name: CreateTaskMessageIdempotent :one
 INSERT INTO task_message (task_id, sequence, stream, content)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (task_id, sequence) DO NOTHING
-RETURNING id, task_id, sequence, stream, content, created_at
+RETURNING id, task_id, sequence, stream, content, type, tool, input, output, created_at
 `
 
 type CreateTaskMessageIdempotentParams struct {
 	TaskID   pgtype.UUID `json:"task_id"`
 	Sequence int32       `json:"sequence"`
-	Stream   string      `json:"stream"`
-	Content  string      `json:"content"`
+	Stream   pgtype.Text `json:"stream"`
+	Content  pgtype.Text `json:"content"`
 }
 
 // Inserts a task message, ignoring duplicates (same task_id + sequence).
@@ -72,13 +76,63 @@ func (q *Queries) CreateTaskMessageIdempotent(ctx context.Context, arg CreateTas
 		&i.Sequence,
 		&i.Stream,
 		&i.Content,
+		&i.Type,
+		&i.Tool,
+		&i.Input,
+		&i.Output,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createStructuredTaskMessage = `-- name: CreateStructuredTaskMessage :one
+INSERT INTO task_message (task_id, sequence, stream, content, type, tool, input, output)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (task_id, sequence) DO NOTHING
+RETURNING id, task_id, sequence, stream, content, type, tool, input, output, created_at
+`
+
+type CreateStructuredTaskMessageParams struct {
+	TaskID   pgtype.UUID `json:"task_id"`
+	Sequence int32       `json:"sequence"`
+	Stream   pgtype.Text `json:"stream"`
+	Content  pgtype.Text `json:"content"`
+	Type     string      `json:"type"`
+	Tool     pgtype.Text `json:"tool"`
+	Input    []byte      `json:"input"`
+	Output   pgtype.Text `json:"output"`
+}
+
+// Inserts a structured task message with type, tool, input, output fields.
+func (q *Queries) CreateStructuredTaskMessage(ctx context.Context, arg CreateStructuredTaskMessageParams) (TaskMessage, error) {
+	row := q.db.QueryRow(ctx, createStructuredTaskMessage,
+		arg.TaskID,
+		arg.Sequence,
+		arg.Stream,
+		arg.Content,
+		arg.Type,
+		arg.Tool,
+		arg.Input,
+		arg.Output,
+	)
+	var i TaskMessage
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.Sequence,
+		&i.Stream,
+		&i.Content,
+		&i.Type,
+		&i.Tool,
+		&i.Input,
+		&i.Output,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const listTaskMessagesByTask = `-- name: ListTaskMessagesByTask :many
-SELECT id, task_id, sequence, stream, content, created_at FROM task_message
+SELECT id, task_id, sequence, stream, content, type, tool, input, output, created_at FROM task_message
 WHERE task_id = $1
 ORDER BY sequence ASC
 `
@@ -98,6 +152,10 @@ func (q *Queries) ListTaskMessagesByTask(ctx context.Context, taskID pgtype.UUID
 			&i.Sequence,
 			&i.Stream,
 			&i.Content,
+			&i.Type,
+			&i.Tool,
+			&i.Input,
+			&i.Output,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -108,4 +166,16 @@ func (q *Queries) ListTaskMessagesByTask(ctx context.Context, taskID pgtype.UUID
 		return nil, err
 	}
 	return items, nil
+}
+
+const countToolUseMessages = `-- name: CountToolUseMessages :one
+SELECT COUNT(*) FROM task_message
+WHERE task_id = $1 AND type = 'tool_use'
+`
+
+func (q *Queries) CountToolUseMessages(ctx context.Context, taskID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countToolUseMessages, taskID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }

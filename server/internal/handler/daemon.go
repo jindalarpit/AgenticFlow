@@ -71,10 +71,20 @@ type TaskFailReq struct {
 }
 
 // TaskMessageEntry represents a single message in the messages request.
+// Supports both legacy format (sequence + stream + content) and structured
+// format (seq + type + tool + content + input + output).
 type TaskMessageEntry struct {
+	// Legacy fields
 	Sequence int32  `json:"sequence"`
 	Stream   string `json:"stream"`
 	Content  string `json:"content"`
+
+	// Structured fields (new)
+	Seq    int32          `json:"seq"`
+	Type   string         `json:"type,omitempty"`
+	Tool   string         `json:"tool,omitempty"`
+	Input  map[string]any `json:"input,omitempty"`
+	Output string         `json:"output,omitempty"`
 }
 
 // TaskMessagesReq is the request body for POST /api/daemon/tasks/{taskId}/messages.
@@ -663,38 +673,100 @@ func (h *DaemonHandler) ReportTaskMessages(w http.ResponseWriter, r *http.Reques
 	}
 
 	for _, msg := range req.Messages {
-		stream := strings.TrimSpace(msg.Stream)
-		if stream != "stdout" && stream != "stderr" && stream != "stdin" {
-			stream = "stdout"
-		}
+		// Detect structured vs legacy format based on presence of "type" field.
+		if msg.Type != "" {
+			// Structured format: use seq, type, tool, content, input, output.
+			seq := msg.Seq
+			if seq == 0 {
+				seq = msg.Sequence // fallback to legacy field
+			}
 
-		_, err := h.Queries.CreateTaskMessageIdempotent(r.Context(), db.CreateTaskMessageIdempotentParams{
-			TaskID:   taskUUID,
-			Sequence: msg.Sequence,
-			Stream:   stream,
-			Content:  msg.Content,
-		})
-		if err != nil {
-			slog.Error("report messages: create failed",
-				"task_id", taskID,
-				"sequence", msg.Sequence,
-				"error", err,
-			)
-			writeErrorJSON(w, http.StatusInternalServerError, "failed to store message")
-			return
-		}
+			var inputJSON []byte
+			if msg.Input != nil {
+				inputJSON, _ = json.Marshal(msg.Input)
+			}
 
-		// Broadcast task_output event for each message via WebSocket.
-		if h.Hub != nil {
-			h.Hub.Broadcast(realtime.Event{
-				Type: "task_output",
-				Payload: map[string]interface{}{
-					"task_id":  taskID,
-					"sequence": msg.Sequence,
-					"stream":   stream,
-					"content":  msg.Content,
-				},
+			_, err := h.Queries.CreateStructuredTaskMessage(r.Context(), db.CreateStructuredTaskMessageParams{
+				TaskID:   taskUUID,
+				Sequence: seq,
+				Stream:   pgtype.Text{}, // NULL for structured messages
+				Content:  pgtype.Text{String: msg.Content, Valid: msg.Content != ""},
+				Type:     msg.Type,
+				Tool:     pgtype.Text{String: msg.Tool, Valid: msg.Tool != ""},
+				Input:    inputJSON,
+				Output:   pgtype.Text{String: msg.Output, Valid: msg.Output != ""},
 			})
+			if err != nil {
+				slog.Error("report messages: create structured failed",
+					"task_id", taskID,
+					"sequence", seq,
+					"error", err,
+				)
+				writeErrorJSON(w, http.StatusInternalServerError, "failed to store message")
+				return
+			}
+
+			// Broadcast structured task_output event via WebSocket.
+			if h.Hub != nil {
+				payload := map[string]interface{}{
+					"task_id":  taskID,
+					"sequence": seq,
+					"type":     msg.Type,
+				}
+				switch msg.Type {
+				case "tool_use":
+					payload["tool"] = msg.Tool
+					if msg.Input != nil {
+						payload["input"] = msg.Input
+					}
+				case "tool_result":
+					payload["tool"] = msg.Tool
+					payload["output"] = msg.Output
+				case "text", "thinking", "error":
+					payload["content"] = msg.Content
+				case "status":
+					payload["content"] = msg.Content
+				}
+				h.Hub.Broadcast(realtime.Event{
+					Type:    "task_output",
+					Payload: payload,
+				})
+			}
+		} else {
+			// Legacy format: use sequence, stream, content.
+			stream := strings.TrimSpace(msg.Stream)
+			if stream != "stdout" && stream != "stderr" && stream != "stdin" {
+				stream = "stdout"
+			}
+
+			_, err := h.Queries.CreateTaskMessageIdempotent(r.Context(), db.CreateTaskMessageIdempotentParams{
+				TaskID:   taskUUID,
+				Sequence: msg.Sequence,
+				Stream:   pgtype.Text{String: stream, Valid: true},
+				Content:  pgtype.Text{String: msg.Content, Valid: true},
+			})
+			if err != nil {
+				slog.Error("report messages: create failed",
+					"task_id", taskID,
+					"sequence", msg.Sequence,
+					"error", err,
+				)
+				writeErrorJSON(w, http.StatusInternalServerError, "failed to store message")
+				return
+			}
+
+			// Broadcast legacy task_output event via WebSocket.
+			if h.Hub != nil {
+				h.Hub.Broadcast(realtime.Event{
+					Type: "task_output",
+					Payload: map[string]interface{}{
+						"task_id":  taskID,
+						"sequence": msg.Sequence,
+						"stream":   stream,
+						"content":  msg.Content,
+					},
+				})
+			}
 		}
 	}
 

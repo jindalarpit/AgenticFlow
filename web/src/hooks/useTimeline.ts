@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
-import { parseMessages, type TimelineItem } from "../lib/tool-chain-parser";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { parseMessages, filterItems, sortItems, type TimelineItem } from "../lib/tool-chain-parser";
 import type { TaskMessage } from "./useTasks";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -20,10 +20,16 @@ export interface UseTimelineResult {
   toggleFilter: (value: string) => void;
   /** Clear all filters */
   clearFilters: () => void;
-  /** Sort direction */
+  /** Sort direction — defaults to "chronological", persists in React state (session only) */
   sortDirection: "chronological" | "newest_first";
-  /** Toggle sort direction */
+  /** Set sort direction — triggers scrollToTopSignal increment */
   setSortDirection: (dir: "chronological" | "newest_first") => void;
+  /**
+   * Monotonically increasing counter that increments each time sortDirection changes.
+   * TimelineView should observe this value and scroll to offset 0 when it changes.
+   * Validates: Requirement 6.4
+   */
+  scrollToTopSignal: number;
   /** Count of tool_use items */
   toolCallCount: number;
   /** Total item count */
@@ -60,6 +66,10 @@ export function useTimeline(options: UseTimelineOptions): UseTimelineResult {
     "chronological" | "newest_first"
   >("chronological");
 
+  // ─── Scroll-to-top signal (increments when sort direction changes) ───────
+  const scrollToTopSignalRef = useRef(0);
+  const [scrollToTopSignal, setScrollToTopSignal] = useState(0);
+
   // ─── Reset filters when taskId changes ───────────────────────────────────
   useEffect(() => {
     setFilters(new Set());
@@ -87,39 +97,24 @@ export function useTimeline(options: UseTimelineOptions): UseTimelineResult {
   // ─── Set sort direction ──────────────────────────────────────────────────
   const setSortDirection = useCallback(
     (dir: "chronological" | "newest_first") => {
-      setSortDirectionState(dir);
+      setSortDirectionState((prev) => {
+        if (prev !== dir) {
+          // Increment scroll-to-top signal when direction actually changes
+          scrollToTopSignalRef.current += 1;
+          setScrollToTopSignal(scrollToTopSignalRef.current);
+        }
+        return dir;
+      });
     },
     []
   );
 
   // ─── Filtered items ──────────────────────────────────────────────────────
   const filteredItems = useMemo(() => {
-    let result: TimelineItem[];
-
-    if (filters.size === 0) {
-      // No filters active — show all items
-      result = items;
-    } else {
-      // Filter: include items whose type OR tool:${toolName} is in the filter set
-      result = items.filter((item) => {
-        // Check if the item's type matches a filter
-        if (filters.has(item.type)) {
-          return true;
-        }
-        // Check if the item's tool-specific key matches a filter
-        if (item.tool && filters.has(`tool:${item.tool}`)) {
-          return true;
-        }
-        return false;
-      });
-    }
+    const result = filterItems(items, filters);
 
     // Apply sort direction
-    if (sortDirection === "newest_first") {
-      return [...result].reverse();
-    }
-
-    return result;
+    return sortItems(result, sortDirection);
   }, [items, filters, sortDirection]);
 
   // ─── Derived values ──────────────────────────────────────────────────────
@@ -167,54 +162,11 @@ export function useTimeline(options: UseTimelineOptions): UseTimelineResult {
     clearFilters,
     sortDirection,
     setSortDirection,
+    scrollToTopSignal,
     toolCallCount,
     totalCount,
     filterOptions,
   };
-}
-
-// ─── Exported Pure Functions (for property-based testing) ────────────────────
-
-/**
- * Pure filter function: given items and a filter set, returns matching items.
- * When filters is empty, returns all items.
- * When filters is non-empty, includes items whose type OR `tool:${toolName}` is in the set.
- *
- * Validates: Requirements 7.1, 7.2
- */
-export function filterItems(
-  items: TimelineItem[],
-  filters: Set<string>
-): TimelineItem[] {
-  if (filters.size === 0) {
-    return items;
-  }
-  return items.filter((item) => {
-    if (filters.has(item.type)) {
-      return true;
-    }
-    if (item.tool && filters.has(`tool:${item.tool}`)) {
-      return true;
-    }
-    return false;
-  });
-}
-
-/**
- * Pure sort function: given items and a direction, returns sorted items.
- * "chronological" returns items as-is (ascending seq).
- * "newest_first" returns items in reverse order.
- *
- * Validates: Requirements 7.4
- */
-export function sortItems(
-  items: TimelineItem[],
-  direction: "chronological" | "newest_first"
-): TimelineItem[] {
-  if (direction === "newest_first") {
-    return [...items].reverse();
-  }
-  return items;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

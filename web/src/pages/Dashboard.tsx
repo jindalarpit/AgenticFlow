@@ -4,6 +4,8 @@ import { useDaemons } from "../hooks/useDaemons";
 import { useAgents } from "../hooks/useAgents";
 import { useManagedAgents } from "../hooks/useManagedAgents";
 import { useTasks, useCreateTask } from "../hooks/useTasks";
+import { useTaskResultPanel } from "../hooks/useTaskResultPanel";
+import { TaskResultPanel } from "../components/TaskResultPanel";
 import type { Daemon } from "../hooks/useDaemons";
 import type { Agent } from "../hooks/useAgents";
 import type { ManagedAgent } from "../hooks/useManagedAgents";
@@ -21,6 +23,24 @@ export default function Dashboard() {
   const { data: tasksData, isLoading: tasksLoading } = useTasks(
     TASKS_PER_PAGE,
     taskOffset
+  );
+
+  // Task Result Panel state
+  const {
+    panelTaskId,
+    isVisible: isResultPanelVisible,
+    setTask: setResultPanelTask,
+    dismiss: dismissResultPanel,
+    task: resultPanelTask,
+    messages: resultPanelMessages,
+    wsConnected: resultPanelWsConnected,
+  } = useTaskResultPanel();
+
+  const handleTaskCreated = useCallback(
+    (taskId: string) => {
+      setResultPanelTask(taskId);
+    },
+    [setResultPanelTask]
   );
 
   const handlePrevPage = useCallback(() => {
@@ -46,7 +66,19 @@ export default function Dashboard() {
           agents={agents ?? []}
           managedAgents={managedAgents ?? []}
           managedAgentsLoading={managedAgentsLoading}
+          onTaskCreated={handleTaskCreated}
         />
+
+        {/* Task Result Panel — shown between form and queue when a task is active */}
+        {isResultPanelVisible && panelTaskId && (
+          <TaskResultPanel
+            taskId={panelTaskId}
+            onDismiss={dismissResultPanel}
+            task={resultPanelTask}
+            messages={resultPanelMessages}
+            wsConnected={resultPanelWsConnected}
+          />
+        )}
 
         {/* Task Queue Section */}
         <TaskQueueSection
@@ -188,10 +220,12 @@ function TaskSubmissionForm({
   agents,
   managedAgents,
   managedAgentsLoading,
+  onTaskCreated,
 }: {
   agents: Agent[];
   managedAgents: ManagedAgent[];
   managedAgentsLoading: boolean;
+  onTaskCreated?: (taskId: string) => void;
 }) {
   const [agentType, setAgentType] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState("");
@@ -242,11 +276,12 @@ function TaskSubmissionForm({
     }
 
     createTask.mutate(payload, {
-      onSuccess: () => {
+      onSuccess: (createdTask) => {
         setPrompt("");
         setSelectedAgentId("");
         setAgentType("");
         setError("");
+        onTaskCreated?.(createdTask.id);
       },
       onError: (err: Error) => {
         setError(err.message || "Failed to create task");

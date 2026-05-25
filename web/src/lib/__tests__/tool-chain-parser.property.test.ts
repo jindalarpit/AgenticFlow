@@ -1060,3 +1060,1205 @@ describe("Property 10: Copy text formatting", () => {
     );
   });
 });
+
+
+// ─── Feature: structured-task-output ─────────────────────────────────────────
+
+import { filterItems, sortItems, deriveSummary } from "../tool-chain-parser";
+
+// ─── Property 9: Filter Correctness ──────────────────────────────────────────
+// Feature: structured-task-output, Property 9: Filter Correctness
+
+/**
+ * **Validates: Requirements 5.2**
+ *
+ * For any array of TimelineItems and any Set of filter values, `filterItems`
+ * returns only items where type is in the set OR `tool:${item.tool}` is in the
+ * set. Empty filter set returns all items.
+ */
+
+/** Generate a TimelineItem with optional tool field for filter testing */
+function arbTimelineItemForFilter(seq: number): fc.Arbitrary<TimelineItem> {
+  return fc
+    .record({
+      type: fc.constantFrom(...validTypes),
+      tool: fc.option(
+        fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+        { nil: undefined }
+      ),
+    })
+    .map(({ type, tool }) => {
+      const item: TimelineItem = { seq, type };
+      if (tool !== undefined) {
+        item.tool = tool;
+      }
+      return item;
+    });
+}
+
+/** Generate a non-empty array of TimelineItems for filter testing */
+const filterItemsArb: fc.Arbitrary<TimelineItem[]> = fc
+  .integer({ min: 1, max: 30 })
+  .chain((length) => {
+    const arbs = Array.from({ length }, (_, i) => arbTimelineItemForFilter(i));
+    return fc.tuple(...arbs);
+  })
+  .map((items) => [...items]);
+
+/** Generate a filter set from possible type values and tool: prefixed values */
+const filterSetArb: fc.Arbitrary<Set<string>> = fc
+  .array(
+    fc.oneof(
+      fc.constantFrom("tool_use", "tool_result", "thinking", "text", "error"),
+      fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0).map((s) => `tool:${s}`)
+    ),
+    { minLength: 0, maxLength: 8 }
+  )
+  .map((arr) => new Set(arr));
+
+describe("Property 9: Filter Correctness", () => {
+  it("empty filter set returns all items", () => {
+    fc.assert(
+      fc.property(filterItemsArb, (items) => {
+        const result = filterItems(items, new Set());
+        expect(result).toEqual(items);
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it("filtered items only contain items matching type OR tool:toolName in filter set", () => {
+    fc.assert(
+      fc.property(filterItemsArb, filterSetArb, (items, filters) => {
+        const result = filterItems(items, filters);
+
+        if (filters.size === 0) {
+          // Empty filter returns all
+          expect(result).toEqual(items);
+          return;
+        }
+
+        // Every returned item must match at least one filter criterion
+        for (const item of result) {
+          const matchesType = filters.has(item.type);
+          const matchesTool = item.tool ? filters.has(`tool:${item.tool}`) : false;
+          expect(matchesType || matchesTool).toBe(true);
+        }
+
+        // Every item in the original that matches should be in the result
+        const expected = items.filter((item) => {
+          if (filters.has(item.type)) return true;
+          if (item.tool && filters.has(`tool:${item.tool}`)) return true;
+          return false;
+        });
+        expect(result).toEqual(expected);
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it("result is a subset of the input (no new items introduced)", () => {
+    fc.assert(
+      fc.property(filterItemsArb, filterSetArb, (items, filters) => {
+        const result = filterItems(items, filters);
+        for (const item of result) {
+          expect(items).toContainEqual(item);
+        }
+      }),
+      { numRuns: 100 }
+    );
+  });
+});
+
+// ─── Property 10: Sort Direction Correctness ─────────────────────────────────
+// Feature: structured-task-output, Property 10: Sort Direction Correctness
+
+/**
+ * **Validates: Requirements 6.2, 6.3**
+ *
+ * For any array of TimelineItems sorted by ascending seq,
+ * `sortItems(items, "chronological")` returns same order, and
+ * `sortItems(items, "newest_first")` returns reverse order.
+ */
+
+/** Generate a sorted (ascending seq) array of TimelineItems for sort testing */
+const sortedItemsArb: fc.Arbitrary<TimelineItem[]> = fc
+  .integer({ min: 1, max: 30 })
+  .chain((length) => {
+    const arbs = Array.from({ length }, (_, i) =>
+      fc.constantFrom(...validTypes).map((type) => ({ seq: i, type }) as TimelineItem)
+    );
+    return fc.tuple(...arbs);
+  })
+  .map((items) => [...items]);
+
+describe("Property 10: Sort Direction Correctness", () => {
+  it('"chronological" returns items in the same order', () => {
+    fc.assert(
+      fc.property(sortedItemsArb, (items) => {
+        const result = sortItems(items, "chronological");
+        expect(result).toEqual(items);
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it('"newest_first" returns items in reverse order', () => {
+    fc.assert(
+      fc.property(sortedItemsArb, (items) => {
+        const result = sortItems(items, "newest_first");
+        const reversed = [...items].reverse();
+        expect(result).toEqual(reversed);
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it('"newest_first" followed by "newest_first" returns original order', () => {
+    fc.assert(
+      fc.property(sortedItemsArb, (items) => {
+        const reversed = sortItems(items, "newest_first");
+        const doubleReversed = sortItems(reversed, "newest_first");
+        expect(doubleReversed).toEqual(items);
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it("sort does not add or remove items", () => {
+    fc.assert(
+      fc.property(sortedItemsArb, (items) => {
+        const chrono = sortItems(items, "chronological");
+        const newest = sortItems(items, "newest_first");
+        expect(chrono.length).toBe(items.length);
+        expect(newest.length).toBe(items.length);
+      }),
+      { numRuns: 100 }
+    );
+  });
+});
+
+// ─── Property 11: Thinking Summary Bounds and Fallback ───────────────────────
+// Feature: structured-task-output, Property 11: Thinking Summary Bounds and Fallback
+
+/**
+ * **Validates: Requirements 7.2, 7.5**
+ *
+ * For any TimelineItem with type "thinking", the summary preview is at most
+ * 150 characters (excluding italic markers `_..._`). If content is
+ * empty/whitespace, summary is "(empty)".
+ */
+
+describe("Property 11: Thinking Summary Bounds and Fallback", () => {
+  it("thinking summary is at most 150 chars excluding italic markers", () => {
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 1, maxLength: 500 }).filter((s) => s.trim().length > 0),
+        (content) => {
+          const item: TimelineItem = { seq: 0, type: "thinking", content };
+          const summary = deriveSummary(item);
+
+          // Summary should be wrapped in italic markers _..._
+          expect(summary.startsWith("_")).toBe(true);
+          expect(summary.endsWith("_")).toBe(true);
+
+          // Extract inner content (between the _ markers)
+          const inner = summary.slice(1, -1);
+          // Inner content (excluding trailing ellipsis) should be at most 150 chars
+          // The ellipsis character "…" counts as 1 char in the slice
+          expect(inner.length).toBeLessThanOrEqual(151); // 150 chars + possible "…"
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+
+  it("thinking with empty/whitespace content returns (empty)", () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom(" ", "\t", "\n", "\r"), { minLength: 0, maxLength: 20 }).map(
+          (chars) => chars.join("")
+        ),
+        (whitespace) => {
+          const item: TimelineItem = { seq: 0, type: "thinking", content: whitespace };
+          const summary = deriveSummary(item);
+          expect(summary).toBe("(empty)");
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+
+  it("thinking with undefined content returns (empty)", () => {
+    const item: TimelineItem = { seq: 0, type: "thinking" };
+    const summary = deriveSummary(item);
+    expect(summary).toBe("(empty)");
+  });
+
+  it("thinking content ≤150 chars produces summary without ellipsis", () => {
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 1, maxLength: 150 }).filter((s) => s.trim().length > 0),
+        (content) => {
+          const item: TimelineItem = { seq: 0, type: "thinking", content };
+          const summary = deriveSummary(item);
+          // Should be _content_ without ellipsis
+          expect(summary).toBe(`_${content}_`);
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+
+  it("thinking content >150 chars produces summary with ellipsis", () => {
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 151, maxLength: 500 }).filter((s) => s.trim().length > 0),
+        (content) => {
+          const item: TimelineItem = { seq: 0, type: "thinking", content };
+          const summary = deriveSummary(item);
+          // Should be _first150chars…_
+          expect(summary).toBe(`_${content.slice(0, 150)}…_`);
+          expect(summary.endsWith("…_")).toBe(true);
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+});
+
+// ─── Property 12: Error Summary Fallback ─────────────────────────────────────
+// Feature: structured-task-output, Property 12: Error Summary Fallback
+
+/**
+ * **Validates: Requirements 8.5**
+ *
+ * For any TimelineItem with type "error" whose content is empty/whitespace,
+ * the summary is "(no error details)".
+ */
+
+describe("Property 12: Error Summary Fallback", () => {
+  it("error with empty/whitespace content returns (no error details)", () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom(" ", "\t", "\n", "\r"), { minLength: 0, maxLength: 20 }).map(
+          (chars) => chars.join("")
+        ),
+        (whitespace) => {
+          const item: TimelineItem = { seq: 0, type: "error", content: whitespace };
+          const summary = deriveSummary(item);
+          expect(summary).toBe("(no error details)");
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+
+  it("error with undefined content returns (no error details)", () => {
+    const item: TimelineItem = { seq: 0, type: "error" };
+    const summary = deriveSummary(item);
+    expect(summary).toBe("(no error details)");
+  });
+
+  it("error with non-empty content returns the content (not the fallback)", () => {
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.trim().length > 0),
+        (content) => {
+          const item: TimelineItem = { seq: 0, type: "error", content };
+          const summary = deriveSummary(item);
+          expect(summary).not.toBe("(no error details)");
+          expect(summary).toBe(content);
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+});
+
+
+// ─── Feature: structured-task-output ─────────────────────────────────────────
+
+// ─── Property 5: Pure Function (No Mutation) ─────────────────────────────────
+// Feature: structured-task-output, Property 5: Pure Function (No Mutation)
+
+/**
+ * **Validates: Requirements 2.4**
+ *
+ * For any input array, calling `parseMessages` does not modify the input array
+ * or any of its elements. Deep comparison before and after shows no differences.
+ */
+
+import { deriveSummary, filterItems, sortItems } from "../tool-chain-parser";
+
+describe("Feature: structured-task-output", () => {
+  describe("Property 5: Pure Function (No Mutation)", () => {
+    /** Generate a TaskMessage for mutation testing */
+    const arbStreamP5 = fc.constantFrom("stdout", "stderr", "stdin") as fc.Arbitrary<
+      "stdout" | "stderr" | "stdin"
+    >;
+
+    const arbContentP5 = fc.oneof(
+      fc.string({ minLength: 1, maxLength: 80 }).map((s) =>
+        s.startsWith("{") ? "text_" + s : s
+      ),
+      fc
+        .record({
+          type: fc.constant("tool_use"),
+          name: fc.string({ minLength: 1, maxLength: 20 }),
+          input: fc.dictionary(
+            fc.string({ minLength: 1, maxLength: 10 }),
+            fc.string({ minLength: 1, maxLength: 30 })
+          ),
+        })
+        .map((obj) => JSON.stringify(obj)),
+      fc
+        .record({
+          type: fc.constant("tool_result"),
+          output: fc.string({ minLength: 1, maxLength: 100 }),
+        })
+        .map((obj) => JSON.stringify(obj)),
+      fc
+        .record({
+          type: fc.constant("thinking"),
+          content: fc.string({ minLength: 1, maxLength: 100 }),
+        })
+        .map((obj) => JSON.stringify(obj))
+    );
+
+    const arbMessagesP5: fc.Arbitrary<TaskMessage[]> = fc
+      .integer({ min: 0, max: 15 })
+      .chain((length) => {
+        if (length === 0) return fc.constant([] as TaskMessage[]);
+        const arbs = Array.from({ length }, (_, i) =>
+          fc.tuple(arbContentP5, arbStreamP5).map(([content, stream]) => ({
+            id: `msg-${i}`,
+            task_id: "task-1",
+            sequence: i + 1,
+            stream,
+            content,
+            created_at: new Date().toISOString(),
+          }))
+        );
+        return fc.tuple(...arbs).map((msgs) => [...msgs]);
+      });
+
+    it("parseMessages does not modify the input array length", () => {
+      fc.assert(
+        fc.property(arbMessagesP5, (messages) => {
+          const originalLength = messages.length;
+          parseMessages(messages);
+          expect(messages.length).toBe(originalLength);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("parseMessages does not modify any element in the input array", () => {
+      fc.assert(
+        fc.property(arbMessagesP5, (messages) => {
+          // Deep clone the input for comparison
+          const snapshot = JSON.parse(JSON.stringify(messages));
+          parseMessages(messages);
+          expect(messages).toEqual(snapshot);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("parseMessages does not mutate individual message objects", () => {
+      fc.assert(
+        fc.property(arbMessagesP5, (messages) => {
+          // Freeze each message to detect mutations (would throw in strict mode)
+          const frozenMessages = messages.map((m) => ({ ...m }));
+          const snapshot = frozenMessages.map((m) => ({ ...m }));
+          parseMessages(frozenMessages);
+          for (let i = 0; i < frozenMessages.length; i++) {
+            expect(frozenMessages[i]).toEqual(snapshot[i]);
+          }
+        }),
+        { numRuns: 100 }
+      );
+    });
+  });
+
+  // ─── Property 6: Deduplication by Sequence ─────────────────────────────────
+  // Feature: structured-task-output, Property 6: Deduplication by Sequence
+
+  /**
+   * **Validates: Requirements 2.6**
+   *
+   * For any input array with duplicate sequence numbers, `parseMessages` retains
+   * only the first occurrence and all output seq values are unique.
+   */
+  describe("Property 6: Deduplication by Sequence", () => {
+    const arbStreamP6b = fc.constantFrom("stdout", "stderr", "stdin") as fc.Arbitrary<
+      "stdout" | "stderr" | "stdin"
+    >;
+
+    const arbContentP6b = fc.oneof(
+      fc.string({ minLength: 1, maxLength: 60 }).map((s) =>
+        s.startsWith("{") ? "text_" + s : s
+      ),
+      fc
+        .record({
+          type: fc.constant("tool_use"),
+          name: fc.string({ minLength: 1, maxLength: 15 }),
+          input: fc.constant({}),
+        })
+        .map((obj) => JSON.stringify(obj)),
+      fc
+        .record({
+          type: fc.constant("thinking"),
+          content: fc.string({ minLength: 1, maxLength: 50 }),
+        })
+        .map((obj) => JSON.stringify(obj))
+    );
+
+    /** Generate messages with guaranteed duplicate sequences */
+    const arbMessagesWithDupsP6b: fc.Arbitrary<TaskMessage[]> = fc
+      .array(fc.integer({ min: 1, max: 30 }), { minLength: 2, maxLength: 12 })
+      .chain((sequences) => {
+        // Force at least one duplicate
+        const withDup = [...sequences, sequences[0]!];
+        const arbs = withDup.map((seq, idx) =>
+          fc.tuple(arbContentP6b, arbStreamP6b).map(([content, stream]) => ({
+            id: `msg-${idx}-${seq}`,
+            task_id: "task-1",
+            sequence: seq,
+            stream,
+            content,
+            created_at: new Date().toISOString(),
+          }))
+        );
+        return fc.tuple(...arbs).map((msgs) => [...msgs]);
+      });
+
+    it("retains only the first occurrence of each sequence number", () => {
+      fc.assert(
+        fc.property(arbMessagesWithDupsP6b, (messages) => {
+          const items = parseMessages(messages);
+
+          // Build expected: keep only first occurrence per sequence
+          const seen = new Set<number>();
+          const firstOccurrences: TaskMessage[] = [];
+          for (const msg of messages) {
+            if (!seen.has(msg.sequence)) {
+              seen.add(msg.sequence);
+              firstOccurrences.push(msg);
+            }
+          }
+
+          const expectedItems = parseMessages(firstOccurrences);
+          expect(items).toEqual(expectedItems);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("all output seq values are unique", () => {
+      fc.assert(
+        fc.property(arbMessagesWithDupsP6b, (messages) => {
+          const items = parseMessages(messages);
+          const seqs = items.map((item) => item.seq);
+          const uniqueSeqs = new Set(seqs);
+          expect(uniqueSeqs.size).toBe(seqs.length);
+        }),
+        { numRuns: 100 }
+      );
+    });
+  });
+
+  // ─── Property 7: Segment Computation Invariants ────────────────────────────
+  // Feature: structured-task-output, Property 7: Segment Computation Invariants
+
+  /**
+   * **Validates: Requirements 3.1, 3.2**
+   *
+   * For any non-empty array of TimelineItems, `computeSegments` produces segments
+   * where: sum of counts equals total items, each segment has a single type, and
+   * adjacent segments have different types.
+   */
+  describe("Property 7: Segment Computation Invariants", () => {
+    const validTypesP7: TimelineItemType[] = [
+      "tool_use",
+      "tool_result",
+      "thinking",
+      "text",
+      "error",
+    ];
+
+    /** Generate a non-empty array of TimelineItems with sequential seq values */
+    const arbNonEmptyItemsP7: fc.Arbitrary<TimelineItem[]> = fc
+      .integer({ min: 1, max: 50 })
+      .chain((length) => {
+        const arbs = Array.from({ length }, (_, i) =>
+          fc.constantFrom(...validTypesP7).map(
+            (type): TimelineItem => ({ seq: i, type })
+          )
+        );
+        return fc.tuple(...arbs);
+      })
+      .map((items) => [...items]);
+
+    it("sum of segment counts equals total item count", () => {
+      fc.assert(
+        fc.property(arbNonEmptyItemsP7, (items) => {
+          const segments = computeSegments(items);
+          const totalCount = segments.reduce((sum, seg) => sum + seg.count, 0);
+          expect(totalCount).toBe(items.length);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("each segment contains only items of a single type", () => {
+      fc.assert(
+        fc.property(arbNonEmptyItemsP7, (items) => {
+          const segments = computeSegments(items);
+          let idx = 0;
+          for (const segment of segments) {
+            for (let j = 0; j < segment.count; j++) {
+              expect(items[idx]!.type).toBe(segment.type);
+              idx++;
+            }
+          }
+          expect(idx).toBe(items.length);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("adjacent segments have different types", () => {
+      fc.assert(
+        fc.property(arbNonEmptyItemsP7, (items) => {
+          const segments = computeSegments(items);
+          for (let i = 1; i < segments.length; i++) {
+            expect(segments[i]!.type).not.toBe(segments[i - 1]!.type);
+          }
+        }),
+        { numRuns: 100 }
+      );
+    });
+  });
+
+  // ─── Property 8: Summary Derivation Bounds ─────────────────────────────────
+  // Feature: structured-task-output, Property 8: Summary Derivation Bounds
+
+  /**
+   * **Validates: Requirements 4.2, 4.3**
+   *
+   * For any TimelineItem with type "tool_use", `deriveSummary` returns a string
+   * of at most 120 characters. If no valid summary can be derived, returns "(no details)".
+   */
+  describe("Property 8: Summary Derivation Bounds", () => {
+    /** Generate a tool_use TimelineItem with arbitrary input */
+    const arbToolUseItem: fc.Arbitrary<TimelineItem> = fc
+      .record({
+        seq: fc.nat({ max: 1000 }),
+        tool: fc.oneof(
+          fc.string({ minLength: 1, maxLength: 50 }),
+          fc.constant("unknown")
+        ),
+        input: fc.oneof(
+          // Empty input
+          fc.constant({} as Record<string, unknown>),
+          // Input with query
+          fc.record({
+            query: fc.string({ minLength: 0, maxLength: 200 }),
+          }) as fc.Arbitrary<Record<string, unknown>>,
+          // Input with file_path
+          fc.record({
+            file_path: fc.string({ minLength: 0, maxLength: 200 }),
+          }) as fc.Arbitrary<Record<string, unknown>>,
+          // Input with path
+          fc.record({
+            path: fc.string({ minLength: 0, maxLength: 200 }),
+          }) as fc.Arbitrary<Record<string, unknown>>,
+          // Input with command
+          fc.record({
+            command: fc.string({ minLength: 0, maxLength: 300 }),
+          }) as fc.Arbitrary<Record<string, unknown>>,
+          // Input with pattern
+          fc.record({
+            pattern: fc.string({ minLength: 0, maxLength: 200 }),
+          }) as fc.Arbitrary<Record<string, unknown>>,
+          // Input with only non-string or long string values
+          fc.dictionary(
+            fc.string({ minLength: 1, maxLength: 10 }),
+            fc.oneof(
+              fc.integer(),
+              fc.boolean(),
+              fc.constant(null),
+              fc.string({ minLength: 121, maxLength: 200 })
+            )
+          ) as fc.Arbitrary<Record<string, unknown>>,
+          // Input with mixed values
+          fc.dictionary(
+            fc.string({ minLength: 1, maxLength: 15 }),
+            fc.oneof(
+              fc.string({ minLength: 0, maxLength: 200 }),
+              fc.integer(),
+              fc.boolean()
+            )
+          ) as fc.Arbitrary<Record<string, unknown>>
+        ),
+      })
+      .map(({ seq, tool, input }): TimelineItem => ({
+        seq,
+        type: "tool_use",
+        tool,
+        input,
+      }));
+
+    it("deriveSummary returns at most 120 characters for tool_use items", () => {
+      fc.assert(
+        fc.property(arbToolUseItem, (item) => {
+          const summary = deriveSummary(item);
+          expect(summary.length).toBeLessThanOrEqual(120);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it('deriveSummary returns "(no details)" when no valid summary can be derived', () => {
+      fc.assert(
+        fc.property(
+          fc.nat({ max: 1000 }),
+          (seq) => {
+            // Item with input where all values are non-string, empty, or >120 chars
+            const item: TimelineItem = {
+              seq,
+              type: "tool_use",
+              tool: "some_tool",
+              input: {
+                count: 42,
+                flag: true,
+                nested: { key: "value" },
+                longStr: "x".repeat(121),
+                emptyStr: "",
+              },
+            };
+            const summary = deriveSummary(item);
+            expect(summary).toBe("(no details)");
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+
+    it("deriveSummary always returns a non-empty string for tool_use items", () => {
+      fc.assert(
+        fc.property(arbToolUseItem, (item) => {
+          const summary = deriveSummary(item);
+          expect(summary.length).toBeGreaterThan(0);
+        }),
+        { numRuns: 100 }
+      );
+    });
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Feature: structured-task-output — Property-Based Tests (Properties 1–4)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { filterItems, sortItems, deriveSummary } from "../tool-chain-parser";
+
+describe("Feature: structured-task-output", () => {
+  // ─── Shared Generators ───────────────────────────────────────────────────
+
+  const validTimelineTypes: TimelineItemType[] = [
+    "tool_use",
+    "tool_result",
+    "thinking",
+    "text",
+    "error",
+  ];
+
+  const streamArb = fc.constantFrom("stdout", "stderr", "stdin") as fc.Arbitrary<
+    "stdout" | "stderr" | "stdin"
+  >;
+
+  /**
+   * Generate message content that covers all parsing paths:
+   * - Plain text (non-JSON)
+   * - JSON with valid type fields
+   * - JSON with invalid/unknown type fields
+   * - JSON with missing tool field for tool_use
+   */
+  const messageContentArb: fc.Arbitrary<string> = fc.oneof(
+    // Plain text (ensure it doesn't start with '{' to avoid JSON parsing)
+    fc
+      .string({ minLength: 1, maxLength: 100 })
+      .map((s) => (s.trim().startsWith("{") ? "text_" + s : s))
+      .filter((s) => s.trim().length > 0),
+    // JSON tool_use with name
+    fc
+      .record({
+        type: fc.constant("tool_use"),
+        name: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+        input: fc.dictionary(
+          fc.string({ minLength: 1, maxLength: 10 }).filter((s) => s.trim().length > 0),
+          fc.string({ minLength: 1, maxLength: 50 })
+        ),
+      })
+      .map((obj) => JSON.stringify(obj)),
+    // JSON tool_result
+    fc
+      .record({
+        type: fc.constant("tool_result"),
+        name: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+        output: fc.string({ minLength: 1, maxLength: 100 }),
+      })
+      .map((obj) => JSON.stringify(obj)),
+    // JSON thinking
+    fc
+      .record({
+        type: fc.constant("thinking"),
+        content: fc.string({ minLength: 1, maxLength: 100 }),
+      })
+      .map((obj) => JSON.stringify(obj)),
+    // JSON error
+    fc
+      .record({
+        type: fc.constant("error"),
+        message: fc.string({ minLength: 1, maxLength: 100 }),
+      })
+      .map((obj) => JSON.stringify(obj)),
+    // JSON with unknown type (should default to "text")
+    fc
+      .record({
+        type: fc
+          .string({ minLength: 1, maxLength: 20 })
+          .filter(
+            (s) =>
+              s.trim().length > 0 &&
+              !["tool_use", "tool_result", "thinking", "error", "text"].includes(s)
+          ),
+        content: fc.string({ minLength: 1, maxLength: 50 }),
+      })
+      .map((obj) => JSON.stringify(obj))
+  );
+
+  /** Generate a TaskMessage with a given sequence number */
+  function taskMessageArb(seq: number): fc.Arbitrary<TaskMessage> {
+    return fc.tuple(messageContentArb, streamArb).map(([content, stream]) => ({
+      id: `msg-${seq}-${Math.random().toString(36).slice(2, 8)}`,
+      task_id: "task-test",
+      sequence: seq,
+      stream,
+      content,
+      created_at: new Date().toISOString(),
+    }));
+  }
+
+  /** Generate an array of TaskMessages with unique sequence numbers */
+  const uniqueSeqMessagesArb: fc.Arbitrary<TaskMessage[]> = fc
+    .integer({ min: 1, max: 20 })
+    .chain((length) => {
+      const arbs = Array.from({ length }, (_, i) => taskMessageArb(i + 1));
+      return fc.tuple(...arbs);
+    })
+    .map((msgs) => [...msgs]);
+
+  /** Generate an array of TaskMessages with potentially shuffled/duplicate sequences */
+  const arbitraryMessagesArb: fc.Arbitrary<TaskMessage[]> = fc
+    .array(fc.integer({ min: 1, max: 50 }), { minLength: 1, maxLength: 15 })
+    .chain((sequences) => {
+      const arbs = sequences.map((seq) => taskMessageArb(seq));
+      return fc.tuple(...arbs) as fc.Arbitrary<TaskMessage[]>;
+    });
+
+  // ─── Property 1: Type Normalization ────────────────────────────────────────
+  // Feature: structured-task-output, Property 1: Type Normalization
+  //
+  // **Validates: Requirements 1.1, 1.6, 1.7, 2.7, 9.6**
+
+  describe("Property 1: Type Normalization", () => {
+    it("parseMessages always produces items with valid type values", () => {
+      const validTypeSet = new Set<string>(validTimelineTypes);
+
+      fc.assert(
+        fc.property(arbitraryMessagesArb, (messages) => {
+          const items = parseMessages(messages);
+          for (const item of items) {
+            expect(validTypeSet.has(item.type)).toBe(true);
+          }
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("legacy messages without type field: stdout/stdin → text, stderr → error", () => {
+      // Generate plain text messages (non-JSON) to test legacy fallback
+      const plainTextContentArb = fc
+        .string({ minLength: 1, maxLength: 80 })
+        .map((s) => (s.trim().startsWith("{") ? "plain_" + s : s))
+        .filter((s) => s.trim().length > 0);
+
+      fc.assert(
+        fc.property(
+          plainTextContentArb,
+          streamArb,
+          fc.integer({ min: 1, max: 100 }),
+          (content, stream, seq) => {
+            const messages: TaskMessage[] = [
+              {
+                id: `msg-${seq}`,
+                task_id: "task-test",
+                sequence: seq,
+                stream,
+                content,
+                created_at: new Date().toISOString(),
+              },
+            ];
+            const items = parseMessages(messages);
+            for (const item of items) {
+              if (stream === "stderr") {
+                expect(item.type).toBe("error");
+              } else {
+                // stdout and stdin → text
+                expect(item.type).toBe("text");
+              }
+            }
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+
+    it("messages with unknown JSON type field are normalized to text", () => {
+      const unknownTypeArb = fc
+        .string({ minLength: 1, maxLength: 20 })
+        .filter(
+          (s) =>
+            s.trim().length > 0 &&
+            !["tool_use", "tool_result", "thinking", "error", "text"].includes(s.trim())
+        );
+
+      fc.assert(
+        fc.property(
+          unknownTypeArb,
+          fc.string({ minLength: 0, maxLength: 50 }),
+          fc.integer({ min: 1, max: 100 }),
+          (unknownType, someContent, seq) => {
+            const jsonContent = JSON.stringify({ type: unknownType, content: someContent });
+            const messages: TaskMessage[] = [
+              {
+                id: `msg-${seq}`,
+                task_id: "task-test",
+                sequence: seq,
+                stream: "stdout",
+                content: jsonContent,
+                created_at: new Date().toISOString(),
+              },
+            ];
+            const items = parseMessages(messages);
+            expect(items.length).toBeGreaterThanOrEqual(1);
+            for (const item of items) {
+              expect(item.type).toBe("text");
+            }
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+  });
+
+  // ─── Property 2: Tool Field Fallback ───────────────────────────────────────
+  // Feature: structured-task-output, Property 2: Tool Field Fallback
+  //
+  // **Validates: Requirements 1.8**
+
+  describe("Property 2: Tool Field Fallback", () => {
+    it('tool_use messages with absent/empty tool field produce items with tool="unknown"', () => {
+      // Generate tool_use JSON without a name/tool field, or with empty name
+      const toolUseMissingToolArb: fc.Arbitrary<string> = fc.oneof(
+        // No name or tool field at all
+        fc
+          .dictionary(
+            fc.string({ minLength: 1, maxLength: 10 }).filter((s) => s.trim().length > 0),
+            fc.string({ minLength: 1, maxLength: 30 })
+          )
+          .map((input) => JSON.stringify({ type: "tool_use", input })),
+        // Empty name field
+        fc
+          .dictionary(
+            fc.string({ minLength: 1, maxLength: 10 }).filter((s) => s.trim().length > 0),
+            fc.string({ minLength: 1, maxLength: 30 })
+          )
+          .map((input) => JSON.stringify({ type: "tool_use", name: "", input })),
+        // Null-ish name (undefined is not serializable, so just omit)
+        fc.constant(JSON.stringify({ type: "tool_use", input: { key: "value" } }))
+      );
+
+      fc.assert(
+        fc.property(
+          toolUseMissingToolArb,
+          fc.integer({ min: 1, max: 100 }),
+          (content, seq) => {
+            const messages: TaskMessage[] = [
+              {
+                id: `msg-${seq}`,
+                task_id: "task-test",
+                sequence: seq,
+                stream: "stdout",
+                content,
+                created_at: new Date().toISOString(),
+              },
+            ];
+            const items = parseMessages(messages);
+            const toolUseItems = items.filter((i) => i.type === "tool_use");
+            for (const item of toolUseItems) {
+              expect(item.tool).toBe("unknown");
+            }
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+
+    it("tool_use messages with a valid tool name preserve that name", () => {
+      const toolNameArb = fc
+        .string({ minLength: 1, maxLength: 50 })
+        .filter((s) => s.trim().length > 0);
+
+      fc.assert(
+        fc.property(
+          toolNameArb,
+          fc.integer({ min: 1, max: 100 }),
+          (toolName, seq) => {
+            const content = JSON.stringify({
+              type: "tool_use",
+              name: toolName,
+              input: { file: "test.ts" },
+            });
+            const messages: TaskMessage[] = [
+              {
+                id: `msg-${seq}`,
+                task_id: "task-test",
+                sequence: seq,
+                stream: "stdout",
+                content,
+                created_at: new Date().toISOString(),
+              },
+            ];
+            const items = parseMessages(messages);
+            const toolUseItems = items.filter((i) => i.type === "tool_use");
+            expect(toolUseItems.length).toBe(1);
+            expect(toolUseItems[0]!.tool).toBe(toolName);
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+  });
+
+  // ─── Property 3: Output Sorted by Sequence ────────────────────────────────
+  // Feature: structured-task-output, Property 3: Output Sorted by Sequence
+  //
+  // **Validates: Requirements 2.1**
+
+  describe("Property 3: Output Sorted by Sequence", () => {
+    it("output items are in strictly non-decreasing order by seq", () => {
+      fc.assert(
+        fc.property(arbitraryMessagesArb, (messages) => {
+          const items = parseMessages(messages);
+          for (let i = 1; i < items.length; i++) {
+            expect(items[i]!.seq).toBeGreaterThanOrEqual(items[i - 1]!.seq);
+          }
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("output is sorted even when input messages are in random order", () => {
+      // Generate messages with shuffled sequence numbers
+      const shuffledMessagesArb: fc.Arbitrary<TaskMessage[]> = fc
+        .array(fc.integer({ min: 1, max: 50 }), { minLength: 2, maxLength: 15 })
+        .chain((sequences) => {
+          // Shuffle the sequences
+          const shuffled = [...sequences].sort(() => Math.random() - 0.5);
+          const arbs = shuffled.map((seq) => taskMessageArb(seq));
+          return fc.tuple(...arbs) as fc.Arbitrary<TaskMessage[]>;
+        });
+
+      fc.assert(
+        fc.property(shuffledMessagesArb, (messages) => {
+          const items = parseMessages(messages);
+          for (let i = 1; i < items.length; i++) {
+            expect(items[i]!.seq).toBeGreaterThanOrEqual(items[i - 1]!.seq);
+          }
+        }),
+        { numRuns: 100 }
+      );
+    });
+  });
+
+  // ─── Property 4: One-to-One Mapping with Field Preservation ────────────────
+  // Feature: structured-task-output, Property 4: One-to-One Mapping with Field Preservation
+  //
+  // **Validates: Requirements 2.2, 2.3**
+
+  describe("Property 4: One-to-One Mapping with Field Preservation", () => {
+    /**
+     * Generate messages that each produce exactly ONE timeline item.
+     * This means single-block content (no multi-JSON messages).
+     */
+    const singleBlockMessageArb = (seq: number): fc.Arbitrary<TaskMessage> => {
+      const contentArb: fc.Arbitrary<{ content: string; expectedType: TimelineItemType; expectedFields: Partial<TimelineItem> }> = fc.oneof(
+        // tool_use with name and input
+        fc
+          .record({
+            name: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+            input: fc.dictionary(
+              fc.string({ minLength: 1, maxLength: 10 }).filter((s) => s.trim().length > 0),
+              fc.string({ minLength: 1, maxLength: 30 })
+            ),
+          })
+          .map(({ name, input }) => ({
+            content: JSON.stringify({ type: "tool_use", name, input }),
+            expectedType: "tool_use" as TimelineItemType,
+            expectedFields: { tool: name, input },
+          })),
+        // tool_result with output
+        fc
+          .record({
+            name: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+            output: fc.string({ minLength: 1, maxLength: 100 }).filter((s) => s.length > 0),
+          })
+          .map(({ name, output }) => ({
+            content: JSON.stringify({ type: "tool_result", name, output }),
+            expectedType: "tool_result" as TimelineItemType,
+            expectedFields: { tool: name, output },
+          })),
+        // thinking with content
+        fc
+          .string({ minLength: 1, maxLength: 100 })
+          .map((thinkContent) => ({
+            content: JSON.stringify({ type: "thinking", content: thinkContent }),
+            expectedType: "thinking" as TimelineItemType,
+            expectedFields: { content: thinkContent },
+          }))
+      );
+
+      return contentArb.map(({ content }) => ({
+        id: `msg-${seq}`,
+        task_id: "task-test",
+        sequence: seq,
+        stream: "stdout" as const,
+        content,
+        created_at: new Date().toISOString(),
+      }));
+    };
+
+    const uniqueSeqSingleBlockArb: fc.Arbitrary<TaskMessage[]> = fc
+      .integer({ min: 1, max: 15 })
+      .chain((length) => {
+        const arbs = Array.from({ length }, (_, i) => singleBlockMessageArb(i + 1));
+        return fc.tuple(...arbs);
+      })
+      .map((msgs) => [...msgs]);
+
+    it("produces exactly one TimelineItem per input message with unique sequences", () => {
+      fc.assert(
+        fc.property(uniqueSeqSingleBlockArb, (messages) => {
+          const items = parseMessages(messages);
+          // Each single-block message produces exactly one item
+          expect(items.length).toBe(messages.length);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it("preserves tool field from tool_use messages", () => {
+      const toolNameArb = fc
+        .string({ minLength: 1, maxLength: 30 })
+        .filter((s) => s.trim().length > 0);
+
+      fc.assert(
+        fc.property(
+          toolNameArb,
+          fc.dictionary(
+            fc.string({ minLength: 1, maxLength: 10 }).filter((s) => s.trim().length > 0),
+            fc.string({ minLength: 1, maxLength: 30 })
+          ),
+          fc.integer({ min: 1, max: 100 }),
+          (toolName, input, seq) => {
+            const content = JSON.stringify({ type: "tool_use", name: toolName, input });
+            const messages: TaskMessage[] = [
+              {
+                id: `msg-${seq}`,
+                task_id: "task-test",
+                sequence: seq,
+                stream: "stdout",
+                content,
+                created_at: new Date().toISOString(),
+              },
+            ];
+            const items = parseMessages(messages);
+            expect(items.length).toBe(1);
+            expect(items[0]!.tool).toBe(toolName);
+            expect(items[0]!.input).toEqual(input);
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+
+    it("preserves output field from tool_result messages", () => {
+      fc.assert(
+        fc.property(
+          fc.string({ minLength: 1, maxLength: 30 }).filter((s) => s.trim().length > 0),
+          fc.string({ minLength: 1, maxLength: 200 }).filter((s) => s.length > 0),
+          fc.integer({ min: 1, max: 100 }),
+          (toolName, output, seq) => {
+            const content = JSON.stringify({ type: "tool_result", name: toolName, output });
+            const messages: TaskMessage[] = [
+              {
+                id: `msg-${seq}`,
+                task_id: "task-test",
+                sequence: seq,
+                stream: "stdout",
+                content,
+                created_at: new Date().toISOString(),
+              },
+            ];
+            const items = parseMessages(messages);
+            expect(items.length).toBe(1);
+            expect(items[0]!.output).toBe(output);
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+
+    it("preserves content field from thinking messages", () => {
+      fc.assert(
+        fc.property(
+          fc.string({ minLength: 1, maxLength: 200 }),
+          fc.integer({ min: 1, max: 100 }),
+          (thinkContent, seq) => {
+            const content = JSON.stringify({ type: "thinking", content: thinkContent });
+            const messages: TaskMessage[] = [
+              {
+                id: `msg-${seq}`,
+                task_id: "task-test",
+                sequence: seq,
+                stream: "stdout",
+                content,
+                created_at: new Date().toISOString(),
+              },
+            ];
+            const items = parseMessages(messages);
+            expect(items.length).toBe(1);
+            expect(items[0]!.content).toBe(thinkContent);
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+  });
+});

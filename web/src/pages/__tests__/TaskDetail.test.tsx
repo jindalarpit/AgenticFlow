@@ -125,6 +125,7 @@ vi.mock("../../hooks/useTimeline", () => ({
     clearFilters: mockClearFilters,
     sortDirection: "chronological" as const,
     setSortDirection: mockSetSortDirection,
+    scrollToTopSignal: 0,
     toolCallCount: 2,
     totalCount: 5,
     filterOptions: [

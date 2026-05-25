@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import fc from "fast-check";
-import { filterItems } from "../useTimeline";
+import { filterItems } from "../../lib/tool-chain-parser";
 import type { TimelineItem, TimelineItemType } from "../../lib/tool-chain-parser";
 
 /**
@@ -320,7 +320,7 @@ describe("Property 7: Filter correctness", () => {
  * the exact reverse of the "chronological" sort order.
  */
 
-import { sortItems } from "../useTimeline";
+import { sortItems } from "../../lib/tool-chain-parser";
 
 // ─── Generators (reusing types from Property 7 above) ────────────────────────
 

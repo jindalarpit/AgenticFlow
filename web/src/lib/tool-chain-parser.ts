@@ -347,35 +347,87 @@ export function detectAgentFormat(messages: TaskMessage[]): ParserConfig {
 }
 
 /**
- * Derive a one-line summary from a TimelineItem's input parameters.
- * Priority order:
- * 1. file_path or path → shortened last 2 segments
- * 2. command → truncated 100 chars
- * 3. query value
- * 4. pattern value
- * 5. First string value under 120 chars
- * 6. "(no details)"
+ * Derive a one-line summary from a TimelineItem.
+ *
+ * For tool_use items, priority order:
+ * 1. input.query — search queries
+ * 2. input.file_path or input.path — shortened to last 2 segments
+ * 3. input.command — truncated to 100 chars
+ * 4. input.pattern — regex patterns
+ * 5. First string value in input ≤120 chars
+ * 6. Fallback: "(no details)"
+ *
+ * The returned string never exceeds 120 characters for tool_use items.
+ *
+ * For thinking items: first 150 chars italic preview, or "(empty)" if whitespace-only.
+ * For error items: content, or "(no error details)" if whitespace-only.
  */
 export function deriveSummary(item: TimelineItem): string {
+  // Handle thinking items
+  if (item.type === "thinking") {
+    const content = item.content ?? "";
+    if (!content.trim()) {
+      return "(empty)";
+    }
+    if (content.length <= 150) {
+      return `_${content}_`;
+    }
+    return `_${content.slice(0, 150)}…_`;
+  }
+
+  // Handle error items
+  if (item.type === "error") {
+    const content = item.content ?? "";
+    if (!content.trim()) {
+      return "(no error details)";
+    }
+    return content;
+  }
+
+  // For tool_use items with input, apply priority order
+  if (item.input && item.type === "tool_use") {
+    const summary = deriveToolUseSummary(item.input);
+    return truncate(summary, 120);
+  }
+
+  // For non-tool_use items without special handling, use content or output
   if (!item.input) {
-    // For non-tool_use items, use content or output
     if (item.content) {
-      return item.content.slice(0, 100).trim() || "(no details)";
+      return item.content.slice(0, 120).trim() || "(no details)";
     }
     if (item.output) {
-      return item.output.slice(0, 100).trim() || "(no details)";
+      return item.output.slice(0, 120).trim() || "(no details)";
     }
     return "(no details)";
   }
 
-  const input = item.input;
+  // tool_result or other items with input but not tool_use
+  if (item.output) {
+    return item.output.slice(0, 120).trim() || "(no details)";
+  }
+  if (item.content) {
+    return item.content.slice(0, 120).trim() || "(no details)";
+  }
+  return "(no details)";
+}
 
-  // Priority 1: file_path or path → shortened last 2 segments
+/**
+ * Derive summary specifically for tool_use input parameters.
+ * Returns the raw summary string (may exceed 120 chars — caller truncates).
+ */
+function deriveToolUseSummary(input: Record<string, unknown>): string {
+  // Priority 1: query value
+  const query = input["query"] as string;
+  if (query && typeof query === "string" && query.length > 0) {
+    return query;
+  }
+
+  // Priority 2: file_path or path → shortened last 2 segments
   const filePath = (input["file_path"] as string) || (input["path"] as string);
   if (filePath && typeof filePath === "string" && filePath.length > 0) {
     const segments = filePath.split("/").filter((s) => s.length > 0);
     if (segments.length === 0) {
-      // Path like "/" has no meaningful segments — fall through to next priority
+      // Path like "/" has no meaningful segments — fall through
     } else if (segments.length <= 2) {
       return segments.join("/");
     } else {
@@ -383,7 +435,7 @@ export function deriveSummary(item: TimelineItem): string {
     }
   }
 
-  // Priority 2: command → truncated 100 chars
+  // Priority 3: command → truncated to 100 chars
   const command = input["command"] as string;
   if (command && typeof command === "string" && command.length > 0) {
     if (command.length <= 100) {
@@ -392,27 +444,31 @@ export function deriveSummary(item: TimelineItem): string {
     return command.slice(0, 100) + "…";
   }
 
-  // Priority 3: query value
-  const query = input["query"] as string;
-  if (query && typeof query === "string" && query.length > 0) {
-    return query;
-  }
-
   // Priority 4: pattern value
   const pattern = input["pattern"] as string;
   if (pattern && typeof pattern === "string" && pattern.length > 0) {
     return pattern;
   }
 
-  // Priority 5: First string value under 120 chars
+  // Priority 5: First string value ≤120 chars
   for (const value of Object.values(input)) {
-    if (typeof value === "string" && value.length > 0 && value.length < 120) {
+    if (typeof value === "string" && value.length > 0 && value.length <= 120) {
       return value;
     }
   }
 
   // Priority 6: fallback
   return "(no details)";
+}
+
+/**
+ * Truncate a string to maxLen characters, appending ellipsis if truncated.
+ */
+function truncate(str: string, maxLen: number): string {
+  if (str.length <= maxLen) {
+    return str;
+  }
+  return str.slice(0, maxLen - 1) + "…";
 }
 
 /**
@@ -520,4 +576,48 @@ function getTypeLabel(item: TimelineItem): string {
     case "error":
       return "Error";
   }
+}
+
+// ─── Filter & Sort Pure Functions ────────────────────────────────────────────
+
+/**
+ * Pure filter function: given items and a filter set, returns matching items.
+ * When filters is empty, returns all items.
+ * When filters is non-empty, includes items whose type OR `tool:${toolName}` is in the set (OR logic).
+ *
+ * Validates: Requirements 5.2, 6.2, 6.3
+ */
+export function filterItems(
+  items: TimelineItem[],
+  filters: Set<string>
+): TimelineItem[] {
+  if (filters.size === 0) {
+    return items;
+  }
+  return items.filter((item) => {
+    if (filters.has(item.type)) {
+      return true;
+    }
+    if (item.tool && filters.has(`tool:${item.tool}`)) {
+      return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * Pure sort function: given items and a direction, returns sorted items.
+ * "chronological" returns items as-is (ascending seq).
+ * "newest_first" returns items in reverse order.
+ *
+ * Validates: Requirements 6.2, 6.3
+ */
+export function sortItems(
+  items: TimelineItem[],
+  direction: "chronological" | "newest_first"
+): TimelineItem[] {
+  if (direction === "newest_first") {
+    return [...items].reverse();
+  }
+  return items;
 }

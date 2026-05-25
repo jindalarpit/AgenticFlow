@@ -25,6 +25,11 @@ export interface TaskMessage {
   stream: "stdout" | "stderr" | "stdin";
   content: string;
   created_at: string;
+  // Structured fields (new — present when server sends typed events)
+  type?: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "status";
+  tool?: string;
+  input?: Record<string, unknown>;
+  output?: string;
 }
 
 export interface TasksResponse {

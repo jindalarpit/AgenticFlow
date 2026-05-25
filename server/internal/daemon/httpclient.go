@@ -174,6 +174,16 @@ func (c *RealHTTPClient) ReportMessages(ctx context.Context, taskID string, mess
 	return err
 }
 
+// ReportTaskMessages sends structured TaskMessageData payloads to the server.
+// This implements the MessageReporter interface used by BatchReporter.
+func (c *RealHTTPClient) ReportTaskMessages(taskID string, messages []TaskMessageData) error {
+	body := map[string]interface{}{
+		"messages": messages,
+	}
+	_, err := c.doJSON(context.Background(), "POST", "/api/daemon/tasks/"+taskID+"/messages", body)
+	return err
+}
+
 func (c *RealHTTPClient) ReportInputState(ctx context.Context, taskID string, state string) error {
 	body := map[string]interface{}{
 		"state": state,

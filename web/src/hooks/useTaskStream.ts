@@ -4,12 +4,23 @@ import type { TaskMessage } from "./useTasks";
 
 interface TaskOutputPayload {
   task_id: string;
-  message: TaskMessage;
+  message?: TaskMessage;
+  // Structured event fields (sent directly on the payload when type is present)
+  sequence?: number;
+  type?: string;
+  tool?: string;
+  content?: string;
+  input?: Record<string, unknown>;
+  output?: string;
+  stream?: string;
 }
 
 /**
  * Custom hook that subscribes to WebSocket task_output events for a specific task ID.
  * Appends new messages to local state and returns the accumulated messages array.
+ *
+ * Supports both legacy format (payload.message with stream/content) and
+ * structured format (payload with type/tool/content/input/output fields).
  */
 export function useTaskStream(taskId: string) {
   const [messages, setMessages] = useState<TaskMessage[]>([]);
@@ -26,13 +37,49 @@ export function useTaskStream(taskId: string) {
       const payload = event.payload as TaskOutputPayload;
       if (payload.task_id !== taskId) return;
 
-      const msg = payload.message;
-      // Deduplicate by sequence number
-      if (seenSequences.current.has(msg.sequence)) return;
-      seenSequences.current.add(msg.sequence);
+      let msg: TaskMessage;
+
+      // Detect structured vs legacy format.
+      if (payload.type) {
+        // Structured format: fields are directly on the payload.
+        const seq = payload.sequence ?? 0;
+        if (seenSequences.current.has(seq)) return;
+        seenSequences.current.add(seq);
+
+        msg = {
+          id: `ws-${seq}`,
+          task_id: taskId,
+          sequence: seq,
+          stream: "stdout",
+          content: payload.content ?? "",
+          created_at: new Date().toISOString(),
+          type: payload.type as TaskMessage["type"],
+          tool: payload.tool,
+          input: payload.input,
+          output: payload.output,
+        };
+      } else if (payload.message) {
+        // Legacy format: message object with stream/content.
+        msg = payload.message;
+        if (seenSequences.current.has(msg.sequence)) return;
+        seenSequences.current.add(msg.sequence);
+      } else {
+        // Fallback: try to construct from flat payload fields (legacy broadcast).
+        const seq = payload.sequence ?? 0;
+        if (seenSequences.current.has(seq)) return;
+        seenSequences.current.add(seq);
+
+        msg = {
+          id: `ws-${seq}`,
+          task_id: taskId,
+          sequence: seq,
+          stream: (payload.stream as TaskMessage["stream"]) ?? "stdout",
+          content: payload.content ?? "",
+          created_at: new Date().toISOString(),
+        };
+      }
 
       setMessages((prev) => {
-        // Insert in sequence order
         const next = [...prev, msg];
         next.sort((a, b) => a.sequence - b.sequence);
         return next;

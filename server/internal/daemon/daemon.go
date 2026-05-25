@@ -551,6 +551,12 @@ func (d *Daemon) pollForTasks(ctx context.Context) {
 // executeTask runs a claimed task through the full lifecycle:
 // start → execute → complete/fail, with output streaming and truncation.
 func (d *Daemon) executeTask(ctx context.Context, task *PollResponse) {
+	// Use the structured agent backend for supported types.
+	if isStructuredBackendSupported(task.AgentType) {
+		d.executeTaskStructured(ctx, task)
+		return
+	}
+
 	taskID := task.TaskID
 	logger := d.logger.With("task_id", taskID, "agent_type", task.AgentType)
 

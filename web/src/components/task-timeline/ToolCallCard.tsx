@@ -8,8 +8,9 @@ interface ToolCallCardProps {
 
 /**
  * Card for tool_use timeline items.
- * Collapsed: tool name (bold) + derived summary.
+ * Collapsed: tool name badge + derived summary (max 120 chars via deriveSummary).
  * Expanded: JSON input in formatted code block.
+ * Chevron rotates 90° clockwise when expanded.
  */
 export function ToolCallCard({ item }: ToolCallCardProps) {
   const [expanded, setExpanded] = useState(false);
@@ -39,7 +40,7 @@ export function ToolCallCard({ item }: ToolCallCardProps) {
           {toolName}
         </span>
 
-        {/* Summary */}
+        {/* Summary (max 120 chars enforced by deriveSummary) */}
         <span className="flex-1 min-w-0 text-sm text-gray-700 truncate">
           <span className="font-semibold">{toolName}</span>
           {summary && summary !== "(no details)" && (
@@ -47,10 +48,19 @@ export function ToolCallCard({ item }: ToolCallCardProps) {
           )}
         </span>
 
-        {/* Expand/collapse indicator */}
-        <span className="text-gray-400 text-xs flex-shrink-0">
-          {expanded ? "▾" : "▸"}
-        </span>
+        {/* Chevron: rotates 90° clockwise when expanded */}
+        <svg
+          className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform duration-200 ${expanded ? "rotate-90" : ""}`}
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            fillRule="evenodd"
+            d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+            clipRule="evenodd"
+          />
+        </svg>
       </button>
 
       {/* Expanded: JSON input */}

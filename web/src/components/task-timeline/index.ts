@@ -10,4 +10,6 @@ export { FilterDropdown } from "./FilterDropdown";
 export { CopyButton } from "./CopyButton";
 export { FinalResultPanel } from "./FinalResultPanel";
 export { ViewModeToggle } from "./ViewModeToggle";
+export { SortDirectionToggle } from "./SortDirectionToggle";
+export type { SortDirection } from "./SortDirectionToggle";
 export { MetadataChips } from "./MetadataChips";

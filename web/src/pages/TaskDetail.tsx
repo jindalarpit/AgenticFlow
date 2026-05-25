@@ -306,6 +306,7 @@ export default function TaskDetail() {
               <TimelineView
                 items={filteredItems}
                 isLive={isRunning}
+                highlightedSeq={selectedSeq}
               />
             </div>
 

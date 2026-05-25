@@ -4,38 +4,44 @@ A self-hosted platform for delegating coding tasks to local AI agents. Run AI co
 
 ## Why AgenticFlow?
 
-- **Self-hosted** — Your code never leaves your machine. No cloud runtimes, no third-party access.
+- **Self-hosted** — Your code never leaves your machine. The server manages tasks; the daemon executes locally.
+- **Centralized control, local execution** — Host the web UI and server centrally. Users connect their local daemons via login. Tasks run on user machines with full access to local tools and repos.
 - **Agent-first** — Define agents with custom instructions, environment variables, and model preferences. Delegate tasks and let them work.
 - **Real-time streaming** — Watch agent output as it happens via WebSocket-powered terminal view.
 - **Multi-runtime** — Supports any CLI-based AI tool (Claude Code, OpenAI Codex, Gemini CLI, custom scripts).
-- **Simple deployment** — Single Go binary + PostgreSQL. No Redis, no Kubernetes, no complex infrastructure.
+- **Simple deployment** — `docker compose up` for the server. Single binary daemon for users. No Redis, no Kubernetes.
 
 ## Architecture
 
 ```
-┌─────────────┐       WebSocket        ┌──────────────┐
-│   Web UI    │◄──────────────────────►│    Server    │
-│  (React)    │       REST API          │   (Go/Chi)   │
-└─────────────┘                         └──────┬───────┘
-                                               │
-                                               │ Poll + Report
-                                               │
-                                        ┌──────▼───────┐
-                                        │    Daemon    │
-                                        │  (per host)  │
-                                        └──────┬───────┘
-                                               │
-                                               │ Spawns
-                                               │
-                                   ┌───────────▼───────────┐
-                                   │   AI CLI Runtimes     │
-                                   │ (Claude, Codex, etc.) │
-                                   └───────────────────────┘
+┌─────────────┐       HTTPS/WSS        ┌──────────────┐       ┌──────────────┐
+│   Web UI    │◄──────────────────────►│    Nginx     │──────►│    Server    │
+│  (Browser)  │                         │  (static +   │       │   (Go/Chi)   │
+└─────────────┘                         │   proxy)     │       └──────┬───────┘
+                                        └──────────────┘              │
+                                                                      │ PostgreSQL
+                                                                      │
+                                                               ┌──────▼───────┐
+                                                               │   Database   │
+                                                               └──────────────┘
+
+┌─────────────┐       HTTP (outbound)
+│   Daemon    │──────────────────────────────────────────────►│    Server    │
+│ (user host) │       Poll + Report                            └──────────────┘
+└──────┬──────┘
+       │ Spawns
+       │
+┌──────▼──────────────┐
+│   AI CLI Runtimes   │
+│ (Claude, Codex, …)  │
+└─────────────────────┘
 ```
 
-**Server** — Go HTTP server handling auth, task management, agent configuration, and WebSocket broadcasting.
+**Server** — Go HTTP server handling auth, task management, agent configuration, and WebSocket broadcasting. Deployed centrally.
 
-**Daemon** — Lightweight process running on your dev machine. Detects installed AI CLIs, polls the server for pending tasks, executes them, and streams output back.
+**Nginx (Web)** — Serves the production React build as static files. Proxies `/api/`, `/auth/`, and `/ws` to the server. Handles SPA routing.
+
+**Daemon** — Lightweight process running on each user's dev machine. Connects outbound to the central server, detects installed AI CLIs, polls for pending tasks, executes them, and streams output back. No inbound ports required.
 
 **Web UI** — Vite + React SPA for managing agents, delegating tasks, and viewing real-time output.
 
@@ -98,25 +104,63 @@ npm install
 npm run dev
 ```
 
-The UI is available at `http://localhost:5173` (proxies API calls to the server).
+The UI is available at `http://localhost:3000` (proxies API calls to the server).
 
 ## Docker Deployment
 
-Run the full stack with a single command:
+Run the full stack (web + server + database) with a single command:
 
 ```bash
-docker compose up -d
+cp .env.example .env
+# Edit .env if needed (defaults work for local testing)
+docker compose up -d --build
 ```
 
-This starts:
-- **server** — Go backend serving the API and the built web UI on port 8080
-- **postgres** — PostgreSQL 16 database
+This starts three services:
 
-The daemon still runs on your host machine (it needs access to local AI CLIs):
+| Service | Role | Default Port |
+|---------|------|-------------|
+| `web` | Nginx serving the React SPA + reverse proxy to API/WebSocket | 3000 |
+| `server` | Go backend (REST API + WebSocket hub) | 8080 |
+| `postgres` | PostgreSQL 16 database | 5432 (localhost only) |
+
+The **web** container serves the production-built frontend via nginx and proxies `/api/`, `/auth/`, and `/ws` requests to the **server** container. Users access the UI at `http://localhost:3000`.
+
+The **daemon** runs on each user's local machine (it needs access to local AI CLIs):
 
 ```bash
+# Point the daemon at your hosted server
+export AF_SERVER_URL=http://your-server-host:8080
 make daemon
 ```
+
+### Centralized Deployment (Remote Users)
+
+For a team deployment where the server is hosted centrally:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Cloud / Server Host                                     │
+│                                                          │
+│  ┌─────────┐    proxy    ┌──────────┐    ┌──────────┐  │
+│  │  nginx  │───────────►│  server  │───►│ postgres │  │
+│  │  (web)  │            │  (Go)    │    │          │  │
+│  │  :3000  │            │  :8080   │    │  :5432   │  │
+│  └─────────┘            └──────────┘    └──────────┘  │
+│       ▲                       ▲                         │
+└───────┼───────────────────────┼─────────────────────────┘
+        │ HTTPS                 │ HTTPS
+        │                       │
+┌───────┼───────┐       ┌──────┼───────┐
+│  User Browser │       │  User Daemon │
+│  (any device) │       │  (local CLI) │
+└───────────────┘       └──────────────┘
+```
+
+1. Deploy with `docker compose up -d` on your server
+2. Put a reverse proxy (Caddy, Traefik, or cloud LB) in front for HTTPS
+3. Each user installs the `af` CLI and runs `af daemon start` locally
+4. The daemon connects outbound to the server — no inbound ports needed on user machines
 
 ### Build from source
 
@@ -125,22 +169,50 @@ docker compose build
 docker compose up -d
 ```
 
+### Individual services
+
+```bash
+# Start only the database
+docker compose up postgres -d
+
+# Rebuild and restart just the web container
+docker compose up web -d --build
+
+# View logs
+docker compose logs -f server
+docker compose logs -f web
+```
+
 ## Configuration
 
 ### Environment Variables
 
+Copy `.env.example` to `.env` and customize:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgres://agenticflow:agenticflow@localhost:5432/agenticflow?sslmode=disable` | PostgreSQL connection string |
-| `PORT` | `8080` | Server listen port |
+| `WEB_PORT` | `3000` | Web UI (nginx) exposed port |
+| `SERVER_PORT` | `8080` | API server exposed port (daemons connect here) |
+| `POSTGRES_PORT` | `5432` | PostgreSQL exposed port (localhost only) |
+| `POSTGRES_DB` | `agenticflow` | Database name |
+| `POSTGRES_USER` | `agenticflow` | Database user |
+| `POSTGRES_PASSWORD` | `agenticflow` | Database password |
 | `GITHUB_CLIENT_ID` | — | GitHub OAuth app client ID |
 | `GITHUB_CLIENT_SECRET` | — | GitHub OAuth app client secret |
 | `GOOGLE_CLIENT_ID` | — | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret |
+| `VERSION` | `dev` | Build version tag |
+| `COMMIT` | `unknown` | Git commit hash |
 
 ### Daemon Configuration
 
 The daemon stores its config at `~/.agenticflow/daemon.json`. On first run it auto-detects installed AI CLIs and registers them as available runtimes.
+
+Key daemon settings:
+- `server_url` — URL of the central server (default: `http://localhost:8080`)
+- `token` — Personal Access Token for authentication
+- `poll_interval` — How often to check for tasks (default: 3s)
+- `heartbeat_interval` — How often to send heartbeats (default: 15s)
 
 ## Usage
 
@@ -221,8 +293,10 @@ AgenticFlow/
 │   │   └── lib/              # API client, WebSocket, utilities
 │   └── package.json
 ├── Makefile                  # Build, test, dev commands
-├── Dockerfile                # Multi-stage production build
-├── docker-compose.yml        # Full stack deployment
+├── Dockerfile                # Server-only production build
+├── Dockerfile.web            # Web frontend (nginx + static files)
+├── nginx.conf                # Nginx config (proxy + SPA routing)
+├── docker-compose.yml        # Full stack: web + server + postgres
 └── .env.example              # Environment template
 ```
 

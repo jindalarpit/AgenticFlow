@@ -84,8 +84,12 @@ type TaskMessage struct {
 	ID        pgtype.UUID        `json:"id"`
 	TaskID    pgtype.UUID        `json:"task_id"`
 	Sequence  int32              `json:"sequence"`
-	Stream    string             `json:"stream"`
-	Content   string             `json:"content"`
+	Stream    pgtype.Text        `json:"stream"`
+	Content   pgtype.Text        `json:"content"`
+	Type      string             `json:"type"`
+	Tool      pgtype.Text        `json:"tool"`
+	Input     []byte             `json:"input"`
+	Output    pgtype.Text        `json:"output"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 

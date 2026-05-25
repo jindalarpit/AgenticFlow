@@ -1023,8 +1023,8 @@ func toTaskMessageResponse(m db.TaskMessage) taskMessageResponse {
 		ID:        uuidToString(m.ID),
 		TaskID:    uuidToString(m.TaskID),
 		Sequence:  m.Sequence,
-		Stream:    m.Stream,
-		Content:   m.Content,
+		Stream:    m.Stream.String,
+		Content:   m.Content.String,
 		CreatedAt: m.CreatedAt.Time.UTC().Format(time.RFC3339),
 	}
 }

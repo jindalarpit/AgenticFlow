@@ -284,7 +284,7 @@ describe("deriveSummary", () => {
     expect(deriveSummary(item)).toBe("npm run test");
   });
 
-  it("returns query value", () => {
+  it("returns query value (highest priority)", () => {
     const item: TimelineItem = {
       seq: 0,
       type: "tool_use",
@@ -333,6 +333,16 @@ describe("deriveSummary", () => {
     expect(deriveSummary(item)).toBe("(no details)");
   });
 
+  it("prefers query over file_path", () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "tool_use",
+      tool: "Search",
+      input: { query: "find files", file_path: "/home/user/src/index.ts" },
+    };
+    expect(deriveSummary(item)).toBe("find files");
+  });
+
   it("prefers file_path over command", () => {
     const item: TimelineItem = {
       seq: 0,
@@ -343,14 +353,14 @@ describe("deriveSummary", () => {
     expect(deriveSummary(item)).toBe("…/src/index.ts");
   });
 
-  it("prefers command over query", () => {
+  it("prefers query over command", () => {
     const item: TimelineItem = {
       seq: 0,
       type: "tool_use",
       tool: "Multi",
       input: { command: "ls -la", query: "find files" },
     };
-    expect(deriveSummary(item)).toBe("ls -la");
+    expect(deriveSummary(item)).toBe("find files");
   });
 
   it("uses content for non-tool_use items without input", () => {
@@ -360,5 +370,103 @@ describe("deriveSummary", () => {
       content: "Agent is analyzing the code...",
     };
     expect(deriveSummary(item)).toBe("Agent is analyzing the code...");
+  });
+
+  it("enforces 120-char max for tool_use items", () => {
+    const longQuery = "a".repeat(200);
+    const item: TimelineItem = {
+      seq: 0,
+      type: "tool_use",
+      tool: "Search",
+      input: { query: longQuery },
+    };
+    const summary = deriveSummary(item);
+    expect(summary.length).toBe(120);
+    expect(summary.endsWith("…")).toBe(true);
+  });
+
+  it("returns italic preview for thinking items", () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "thinking",
+      content: "Let me analyze this problem step by step",
+    };
+    expect(deriveSummary(item)).toBe("_Let me analyze this problem step by step_");
+  });
+
+  it("truncates thinking preview to 150 chars with ellipsis", () => {
+    const longContent = "a".repeat(200);
+    const item: TimelineItem = {
+      seq: 0,
+      type: "thinking",
+      content: longContent,
+    };
+    const summary = deriveSummary(item);
+    // _<150 chars>…_ = 153 chars total
+    expect(summary).toBe(`_${"a".repeat(150)}…_`);
+  });
+
+  it('returns "(empty)" for thinking items with whitespace-only content', () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "thinking",
+      content: "   \n\t  ",
+    };
+    expect(deriveSummary(item)).toBe("(empty)");
+  });
+
+  it('returns "(empty)" for thinking items with no content', () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "thinking",
+    };
+    expect(deriveSummary(item)).toBe("(empty)");
+  });
+
+  it("returns content for error items", () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "error",
+      content: "Connection refused: ECONNREFUSED",
+    };
+    expect(deriveSummary(item)).toBe("Connection refused: ECONNREFUSED");
+  });
+
+  it('returns "(no error details)" for error items with whitespace-only content', () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "error",
+      content: "   ",
+    };
+    expect(deriveSummary(item)).toBe("(no error details)");
+  });
+
+  it('returns "(no error details)" for error items with no content', () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "error",
+    };
+    expect(deriveSummary(item)).toBe("(no error details)");
+  });
+
+  it("first string value must be ≤120 chars (not <120)", () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "tool_use",
+      tool: "Custom",
+      input: { some_field: "a".repeat(120) },
+    };
+    // Exactly 120 chars should be accepted as a valid summary
+    expect(deriveSummary(item)).toBe("a".repeat(120));
+  });
+
+  it("skips string values >120 chars in fallback scan", () => {
+    const item: TimelineItem = {
+      seq: 0,
+      type: "tool_use",
+      tool: "Custom",
+      input: { long_field: "a".repeat(121), short_field: "hello" },
+    };
+    expect(deriveSummary(item)).toBe("hello");
   });
 });

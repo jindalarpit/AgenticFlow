@@ -178,7 +178,7 @@ describe("formatCopyText", () => {
       { seq: 0, type: "thinking", content: "Let me analyze this" },
     ];
     const text = formatCopyText(items);
-    expect(text).toBe("[Thinking] Let me analyze this");
+    expect(text).toBe("[Thinking] _Let me analyze this_");
   });
 
   it("formats text with 'Text' label", () => {

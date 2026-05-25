@@ -9,15 +9,22 @@ const PREVIEW_LENGTH = 150;
 
 /**
  * Card for thinking timeline items.
- * Collapsed: brain emoji + italic preview (first 150 chars).
- * Expanded: full thinking content.
+ * Collapsed: badge with brain icon (🧠) prefix + "Thinking" label, italic preview (first 150 chars).
+ * Expanded: full thinking content with whitespace-pre-wrap formatting.
+ *
+ * Requirements: 7.1, 7.2, 7.3, 7.5
  */
 export function ThinkingCard({ item }: ThinkingCardProps) {
   const [expanded, setExpanded] = useState(false);
 
-  const content = item.content || "";
+  const content = item.content ?? "";
+  const isEmpty = !content.trim();
   const isLong = content.length > PREVIEW_LENGTH;
-  const preview = isLong ? content.slice(0, PREVIEW_LENGTH) + "…" : content;
+  const preview = isEmpty
+    ? "(empty)"
+    : isLong
+      ? content.slice(0, PREVIEW_LENGTH) + "…"
+      : content;
 
   return (
     <div
@@ -36,15 +43,15 @@ export function ThinkingCard({ item }: ThinkingCardProps) {
           {item.seq + 1}
         </span>
 
-        {/* Type badge */}
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/20 text-violet-700">
-          Thinking
+        {/* Type badge with brain icon prefix */}
+        <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/20 text-violet-700">
+          <span>🧠</span>
+          <span>Thinking</span>
         </span>
 
-        {/* Brain icon + italic preview */}
-        <span className="flex-1 min-w-0 text-sm text-gray-600 truncate">
-          <span className="mr-1">🧠</span>
-          <span className="italic">{preview || "(empty)"}</span>
+        {/* Italic preview */}
+        <span className="flex-1 min-w-0 text-sm text-gray-600 truncate italic">
+          {preview}
         </span>
 
         {/* Expand/collapse indicator */}
@@ -53,10 +60,12 @@ export function ThinkingCard({ item }: ThinkingCardProps) {
         </span>
       </button>
 
-      {/* Expanded: full thinking content */}
+      {/* Expanded: full thinking content with whitespace-pre-wrap */}
       {expanded && (
         <div className="px-3 pb-3 pt-1 border-t border-gray-100">
-          <p className="text-sm text-gray-700 whitespace-pre-wrap">{content}</p>
+          <p className="text-sm text-gray-700 whitespace-pre-wrap">
+            {isEmpty ? "(empty)" : content}
+          </p>
         </div>
       )}
     </div>
