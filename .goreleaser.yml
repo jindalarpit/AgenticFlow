@@ -38,7 +38,7 @@ changelog:
       - "^test:"
       - "^chore:"
 
-brews:
+homebrew:
   - name: af
     ids:
       - versioned
