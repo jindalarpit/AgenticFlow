@@ -135,9 +135,8 @@ export default function AgentDetail() {
     return () => clearTimeout(timer);
   }, [isLoading]);
 
-  // Determine ownership
-  const currentUserId = getCurrentUserId();
-  const isOwner = agent ? agent.owner_id === currentUserId : false;
+  // Determine ownership — in single-user mode, always treat as owner
+  const isOwner = true;
 
   // Handlers
   const handleUpdate = async (data: Partial<Agent>): Promise<void> => {

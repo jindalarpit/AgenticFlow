@@ -128,6 +128,16 @@ export function PageHeader({ agent, isOwner, onDelete }: PageHeaderProps) {
         {label}
       </span>
 
+      {/* Owner-only Edit button */}
+      {isOwner && (
+        <Link
+          to={`/agents/${agent.id}/edit`}
+          className="inline-flex items-center rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 flex-shrink-0"
+        >
+          Edit
+        </Link>
+      )}
+
       {/* Owner-only dropdown menu */}
       {isOwner && (
         <div className="relative flex-shrink-0">

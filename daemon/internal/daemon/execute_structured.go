@@ -92,6 +92,20 @@ func (d *Daemon) executeTaskStructuredSinglePass(ctx context.Context, task *Poll
 		logger.Warn("failed to report task start", "error", err)
 	}
 
+	// Inject skills and MCP config before execution.
+	injResult, mcpArgs, injErr := injectSkillsAndMCP(env.WorkspaceDir, task.AgentType, task.Agent, logger)
+	if injErr != nil {
+		logger.Error("skill/MCP injection failed", "error", injErr)
+		d.reportTaskFailure(ctx, taskID, fmt.Sprintf("skill/MCP injection failed: %v", injErr), -1)
+		return
+	}
+	defer cleanupInjection(injResult, logger)
+
+	// Append MCP args to custom args.
+	if len(mcpArgs) > 0 {
+		customArgs = append(customArgs, mcpArgs...)
+	}
+
 	cfg := agent.Config{
 		ExecutablePath: agentEntry.Path,
 		Env:            customEnv,

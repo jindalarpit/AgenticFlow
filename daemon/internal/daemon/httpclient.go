@@ -236,3 +236,11 @@ func (c *RealHTTPClient) CompleteTaskConversational(ctx context.Context, taskID,
 	_, err := c.doJSON(ctx, "POST", "/api/daemon/tasks/"+taskID+"/complete", body)
 	return err
 }
+
+func (c *RealHTTPClient) ReportLocalSkills(ctx context.Context, runtimeID string, skills []LocalSkillReport) error {
+	body := map[string]interface{}{
+		"skills": skills,
+	}
+	_, err := c.doJSON(ctx, "POST", "/api/daemon/runtimes/"+runtimeID+"/local-skills", body)
+	return err
+}

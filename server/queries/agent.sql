@@ -1,6 +1,6 @@
 -- name: CreateAgent :one
-INSERT INTO agent (user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+INSERT INTO agent (user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, mcp_config)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING *;
 
 -- name: GetAgent :one
@@ -23,6 +23,7 @@ UPDATE agent SET
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     avatar_url = COALESCE(sqlc.narg('avatar_url'), avatar_url),
+    mcp_config = CASE WHEN sqlc.arg('set_mcp_config')::boolean THEN sqlc.narg('mcp_config') ELSE mcp_config END,
     updated_at = now()
 WHERE id = @id AND user_id = @user_id
 RETURNING *;

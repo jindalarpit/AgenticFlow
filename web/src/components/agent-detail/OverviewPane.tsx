@@ -6,6 +6,7 @@ import { ActivityTab } from "./ActivityTab";
 import { TasksTab } from "./TasksTab";
 import { InstructionsTab } from "./InstructionsTab";
 import { SkillsTab } from "./SkillsTab";
+import { ToolsTab } from "./ToolsTab";
 import { EnvironmentTab } from "./EnvironmentTab";
 import { CustomArgsTab } from "./CustomArgsTab";
 
@@ -97,6 +98,14 @@ export function OverviewPane({ agent, isOwner, onSave }: OverviewPaneProps) {
           />
         )}
         {activeTab === "skills" && <SkillsTab agent={agent} />}
+        {activeTab === "tools" && (
+          <ToolsTab
+            agent={agent}
+            isOwner={isOwner}
+            onDirtyChange={setActiveDirty}
+            onSave={onSave}
+          />
+        )}
         {activeTab === "env" && (
           <EnvironmentTab
             agent={agent}

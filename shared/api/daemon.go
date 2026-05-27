@@ -1,5 +1,7 @@
 package api
 
+import "encoding/json"
+
 // DaemonRegisterRequest is sent by the daemon on startup to register
 // itself and its detected agent CLI runtimes with the server.
 type DaemonRegisterRequest struct {
@@ -39,6 +41,8 @@ type TaskAgentData struct {
 	CustomEnv    map[string]string `json:"custom_env,omitempty"`
 	CustomArgs   []string          `json:"custom_args,omitempty"`
 	Model        string            `json:"model,omitempty"`
+	Skills       []TaskSkill       `json:"skills,omitempty"`
+	MCPConfig    json.RawMessage   `json:"mcp_config,omitempty"`
 }
 
 // TaskCompleteRequest is sent by the daemon when a task finishes successfully.

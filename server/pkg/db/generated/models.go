@@ -25,6 +25,7 @@ type Agent struct {
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 	ArchivedAt         pgtype.Timestamptz `json:"archived_at"`
+	McpConfig          []byte             `json:"mcp_config"`
 }
 
 type AgentRuntime struct {
@@ -37,6 +38,12 @@ type AgentRuntime struct {
 	Status     string             `json:"status"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AgentSkill struct {
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	SkillID   pgtype.UUID        `json:"skill_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Daemon struct {
@@ -69,6 +76,26 @@ type PromptHistory struct {
 	PromptText  string             `json:"prompt_text"`
 	OutputText  pgtype.Text        `json:"output_text"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type Skill struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Content     string             `json:"content"`
+	Config      []byte             `json:"config"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SkillFile struct {
+	ID        pgtype.UUID        `json:"id"`
+	SkillID   pgtype.UUID        `json:"skill_id"`
+	Path      string             `json:"path"`
+	Content   string             `json:"content"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Task struct {

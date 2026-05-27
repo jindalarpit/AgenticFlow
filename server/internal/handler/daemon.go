@@ -459,6 +459,42 @@ func (h *DaemonHandler) PollTasks(w http.ResponseWriter, r *http.Request) {
 					agentData["custom_args"] = customArgs
 				}
 			}
+
+			// Enrich with agent skills (always include, empty array if none).
+			skills := []api.TaskSkill{}
+			skillRows, skillErr := h.Queries.GetAgentSkillsWithFiles(r.Context(), agent.ID)
+			if skillErr == nil {
+				for _, row := range skillRows {
+					skill := api.TaskSkill{
+						Name:        row.Name,
+						Description: row.Description,
+						Content:     row.Content,
+					}
+					// Fetch supporting files for this skill.
+					fileRows, fileErr := h.Queries.GetSkillFilesWithContent(r.Context(), row.ID)
+					if fileErr == nil && len(fileRows) > 0 {
+						for _, f := range fileRows {
+							skill.Files = append(skill.Files, api.TaskSkillFile{
+								Path:    f.Path,
+								Content: f.Content,
+							})
+						}
+					}
+					skills = append(skills, skill)
+				}
+			} else {
+				slog.Warn("poll tasks: failed to load skills for agent",
+					"agent_id", uuidToString(agent.ID),
+					"error", skillErr,
+				)
+			}
+			agentData["skills"] = skills
+
+			// Include mcp_config from agent record (omit when null).
+			if len(agent.McpConfig) > 0 {
+				agentData["mcp_config"] = json.RawMessage(agent.McpConfig)
+			}
+
 			response["agent"] = agentData
 		} else {
 			slog.Warn("poll tasks: failed to load agent for claimed task",

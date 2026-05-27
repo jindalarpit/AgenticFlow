@@ -178,6 +178,20 @@ func (d *Daemon) executeConversationalStage(ctx context.Context, task *PollRespo
 		logger.Warn("failed to report task start", "error", err)
 	}
 
+	// Inject skills and MCP config before execution.
+	injResult, mcpArgs, injErr := injectSkillsAndMCP(workspaceDir, task.AgentType, task.Agent, logger)
+	if injErr != nil {
+		logger.Error("skill/MCP injection failed", "error", injErr)
+		d.reportTaskFailure(ctx, taskID, fmt.Sprintf("skill/MCP injection failed: %v", injErr), -1)
+		return
+	}
+	defer cleanupInjection(injResult, logger)
+
+	// Append MCP args to custom args.
+	if len(mcpArgs) > 0 {
+		customArgs = append(customArgs, mcpArgs...)
+	}
+
 	result, sessionID := d.executeConversationalAgent(ctx, task, agentEntry.Path, stagePrompt, workspaceDir, model, systemPrompt, customEnv, customArgs, task.PriorSessionID, logger)
 
 	// Retry without resume if session resume failed.

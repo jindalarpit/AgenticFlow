@@ -297,9 +297,8 @@ export default function AgentsPage() {
   }, []);
 
   const handleOpenCreate = useCallback(() => {
-    setDuplicateTemplate(null);
-    setShowCreate(true);
-  }, []);
+    navigate("/agents/new");
+  }, [navigate]);
 
   const handleCloseCreate = useCallback(() => {
     setShowCreate(false);

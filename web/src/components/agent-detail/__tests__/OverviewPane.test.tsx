@@ -67,6 +67,28 @@ vi.mock("../SkillsTab", () => ({
   ),
 }));
 
+vi.mock("../ToolsTab", () => ({
+  ToolsTab: ({
+    agent,
+    onDirtyChange,
+  }: {
+    agent: Agent;
+    isOwner: boolean;
+    onDirtyChange: (dirty: boolean) => void;
+    onSave: (data: Partial<Agent>) => Promise<void>;
+  }) => (
+    <div data-testid="tools-tab-content">
+      Tools for {agent.name}
+      <button
+        data-testid="tools-set-dirty-btn"
+        onClick={() => onDirtyChange(true)}
+      >
+        Set Dirty
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock("../EnvironmentTab", () => ({
   EnvironmentTab: ({
     agent,
@@ -145,6 +167,7 @@ const mockAgent: Agent = {
   owner_id: "user-001",
   owner_name: "Test User",
   skills: [{ id: "skill-1", name: "Code Review" }],
+  mcp_config: null,
   created_at: "2025-01-01T00:00:00Z",
   updated_at: "2025-01-15T00:00:00Z",
 };

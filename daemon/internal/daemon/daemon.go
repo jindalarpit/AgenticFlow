@@ -44,6 +44,16 @@ type HTTPClient interface {
 	ReportStageCompletion(ctx context.Context, taskID, stageName, outputContent string) error
 	// CompleteTaskConversational reports conversational task completion with session tracking.
 	CompleteTaskConversational(ctx context.Context, taskID, output, sessionID, workDir string) error
+	// ReportLocalSkills reports discovered local skills to the server for a given runtime.
+	ReportLocalSkills(ctx context.Context, runtimeID string, skills []LocalSkillReport) error
+}
+
+// LocalSkillReport represents a discovered local skill to report to the server.
+type LocalSkillReport struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	SourcePath  string `json:"source_path"`
+	Provider    string `json:"provider"`
 }
 
 // RegisterRequest is the payload sent to POST /api/daemon/register.
@@ -240,6 +250,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.register(ctx); err != nil {
 		d.logger.Warn("initial registration failed, will retry on heartbeat", "error", err)
 	}
+
+	// Report local skills after registration.
+	d.reportLocalSkills(ctx)
 
 	// Start background loops.
 	var wg sync.WaitGroup

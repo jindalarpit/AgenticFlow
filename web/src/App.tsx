@@ -1,13 +1,19 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
-import TaskDetail from "./pages/TaskDetail";
 import AgentsPage from "./pages/AgentsPage";
 import AgentDetail from "./pages/AgentDetail";
 import Settings from "./pages/Settings";
+import SkillForm from "./pages/SkillForm";
+import SkillList from "./pages/SkillList";
+
+const TaskDetail = lazy(() => import("./pages/TaskDetail"));
+const AgentCreatePage = lazy(() => import("./pages/AgentCreatePage"));
+const AgentEditPage = lazy(() => import("./pages/AgentEditPage"));
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -38,7 +44,9 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Layout>
-                  <TaskDetail />
+                  <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                    <TaskDetail />
+                  </Suspense>
                 </Layout>
               </ProtectedRoute>
             }
@@ -64,11 +72,65 @@ export default function App() {
             }
           />
           <Route
+            path="/agents/new"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                    <AgentCreatePage />
+                  </Suspense>
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/agents/:id/edit"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                    <AgentEditPage />
+                  </Suspense>
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/agents/:id"
             element={
               <ProtectedRoute>
                 <Layout>
                   <AgentDetail />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/skills"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <SkillList />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/skills/new"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <SkillForm />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/skills/:id/edit"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <SkillForm />
                 </Layout>
               </ProtectedRoute>
             }

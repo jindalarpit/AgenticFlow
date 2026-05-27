@@ -1,5 +1,11 @@
 package daemon
 
+import (
+	"encoding/json"
+
+	"github.com/agenticflow/agenticflow/shared/api"
+)
+
 // TaskClaimResponse is the canonical response from the task claim endpoint
 // (GET /api/daemon/tasks/poll). It contains the task details and optionally
 // the full agent configuration for Runtime_Brief construction and execution.
@@ -18,4 +24,6 @@ type TaskAgentData struct {
 	CustomEnv    map[string]string `json:"custom_env,omitempty"`
 	CustomArgs   []string          `json:"custom_args,omitempty"`
 	Model        string            `json:"model,omitempty"`
+	Skills       []api.TaskSkill   `json:"skills,omitempty"`
+	MCPConfig    json.RawMessage   `json:"mcp_config,omitempty"`
 }

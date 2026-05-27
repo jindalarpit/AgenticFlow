@@ -27,6 +27,7 @@ function createMockAgent(overrides: Partial<Agent> = {}): Agent {
       { id: "skill-1", name: "code-review" },
       { id: "skill-2", name: "testing" },
     ],
+    mcp_config: null,
     created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(), // 3 days ago
     updated_at: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(), // 1 hour ago
     ...overrides,

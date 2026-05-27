@@ -49,6 +49,7 @@ export interface Agent {
   owner_id: string;
   owner_name?: string;
   skills: AgentSkill[];
+  mcp_config: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
@@ -98,8 +99,8 @@ export interface DaemonEvent {
 
 /* ─── Tab State ─── */
 
-/** Identifiers for the six tabs in the Overview Pane. */
-export type TabId = "activity" | "tasks" | "instructions" | "skills" | "env" | "custom_args";
+/** Identifiers for the seven tabs in the Overview Pane. */
+export type TabId = "activity" | "tasks" | "instructions" | "skills" | "tools" | "env" | "custom_args";
 
 /** State for tab navigation and dirty-guard logic. */
 export interface TabState {

@@ -116,6 +116,8 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 	patH := handler.NewPATHandler(queries, patCache)
 	agentH := handler.NewAgentHandler(queries, hub)
 	runtimeH := handler.NewRuntimeHandler(queries)
+	skillH := handler.NewSkillHandler(queries)
+	agentSkillH := handler.NewAgentSkillHandler(queries, pool)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache))
 
@@ -161,6 +163,18 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Get("/api/custom-agents", userH.ListCustomAgents)
 		r.Put("/api/custom-agents/{id}", userH.UpdateCustomAgent)
 		r.Delete("/api/custom-agents/{id}", userH.DeleteCustomAgent)
+
+		// Skills.
+		r.Post("/api/skills", skillH.Create)
+		r.Get("/api/skills", skillH.List)
+		r.Post("/api/skills/import", skillH.Import)
+		r.Get("/api/skills/{id}", skillH.Get)
+		r.Put("/api/skills/{id}", skillH.Update)
+		r.Delete("/api/skills/{id}", skillH.Delete)
+
+		// Agent-Skill Associations.
+		r.Put("/api/agents/{id}/skills", agentSkillH.SetSkills)
+		r.Get("/api/agents/{id}/skills", agentSkillH.GetSkills)
 
 		// Tokens (PAT management).
 		r.Get("/api/tokens", patH.ListPersonalAccessTokens)

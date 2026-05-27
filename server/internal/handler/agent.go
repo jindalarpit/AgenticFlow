@@ -65,6 +65,7 @@ type CreateAgentRequest struct {
 	Model              string            `json:"model"`
 	Visibility         string            `json:"visibility"`
 	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
+	MCPConfig          json.RawMessage   `json:"mcp_config"`
 }
 
 // AgentResponse is the public representation of an agent.
@@ -82,6 +83,7 @@ type AgentResponse struct {
 	Status             string            `json:"status"`
 	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
 	OwnerID            string            `json:"owner_id"`
+	MCPConfig          json.RawMessage   `json:"mcp_config"`
 	ArchivedAt         *string           `json:"archived_at"`
 	CreatedAt          string            `json:"created_at"`
 	UpdatedAt          string            `json:"updated_at"`
@@ -122,6 +124,9 @@ func toAgentResponse(a db.Agent) AgentResponse {
 	}
 	if len(a.CustomArgs) > 0 {
 		_ = json.Unmarshal(a.CustomArgs, &resp.CustomArgs)
+	}
+	if len(a.McpConfig) > 0 {
+		resp.MCPConfig = json.RawMessage(a.McpConfig)
 	}
 
 	return resp
@@ -234,6 +239,16 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Validate mcp_config (if provided) ---
+	var mcpConfigBytes []byte
+	if len(req.MCPConfig) > 0 && string(req.MCPConfig) != "null" {
+		if !json.Valid(req.MCPConfig) {
+			writeErrorJSON(w, http.StatusBadRequest, "mcp_config must be valid JSON")
+			return
+		}
+		mcpConfigBytes = []byte(req.MCPConfig)
+	}
+
 	// --- Validate runtime_id exists ---
 	if req.RuntimeID == "" {
 		writeErrorJSON(w, http.StatusBadRequest, "runtime_id is required")
@@ -307,6 +322,7 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrentTasks: req.MaxConcurrentTasks,
 		Visibility:         req.Visibility,
 		AvatarUrl:          pgtype.Text{String: ptrToString(req.AvatarURL), Valid: req.AvatarURL != nil},
+		McpConfig:          mcpConfigBytes,
 	})
 	if err != nil {
 		slog.Error("create agent: insert failed", "user_id", userID, "error", err)
@@ -386,6 +402,7 @@ type UpdateAgentRequest struct {
 	Model              *string            `json:"model"`
 	Visibility         *string            `json:"visibility"`
 	MaxConcurrentTasks *int32             `json:"max_concurrent_tasks"`
+	MCPConfig          json.RawMessage    `json:"mcp_config"`
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +482,11 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	// Determine if mcp_config was explicitly present in the request body.
+	// json.RawMessage is nil when the field is absent from JSON,
+	// and contains the literal bytes "null" when explicitly set to null.
+	mcpConfigPresent := req.MCPConfig != nil
 
 	// --- Validate name (if provided) ---
 	if req.Name != nil {
@@ -631,6 +653,23 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AvatarURL != nil {
 		params.AvatarUrl = pgtype.Text{String: *req.AvatarURL, Valid: true}
+	}
+
+	// --- Handle mcp_config tri-state ---
+	// mcpConfigPresent=false → field omitted → no change (SetMcpConfig=false)
+	// mcpConfigPresent=true, value is "null" → clear (SetMcpConfig=true, McpConfig=nil)
+	// mcpConfigPresent=true, value is JSON object → validate and store
+	if mcpConfigPresent {
+		params.SetMcpConfig = true
+		if string(req.MCPConfig) == "null" {
+			params.McpConfig = nil
+		} else {
+			if !json.Valid(req.MCPConfig) {
+				writeErrorJSON(w, http.StatusBadRequest, "mcp_config must be valid JSON")
+				return
+			}
+			params.McpConfig = []byte(req.MCPConfig)
+		}
 	}
 
 	agent, err := h.Queries.UpdateAgent(r.Context(), params)
