@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
 )
 
 // TestCreateAgent_Validation tests the validation logic of the CreateAgent handler.

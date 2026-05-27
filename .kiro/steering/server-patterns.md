@@ -5,17 +5,15 @@ fileMatchPattern: "**/cmd/server/**,**/handler/**,**/middleware/**,**/realtime/*
 
 # Server Implementation Patterns
 
-Reference: `/Users/arpit.jindal/workspace/opensource/multica/server/cmd/server/router.go`
+## Router Structure
 
-## Router Structure (from multica)
-
-Follow the exact same route grouping pattern:
+Follow this route grouping pattern:
 
 ```go
 func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
     r := chi.NewRouter()
     
-    // Global middleware (same order as multica)
+    // Global middleware
     r.Use(chimw.RequestID)
     r.Use(middleware.RequestLogger)
     r.Use(chimw.Recoverer)
@@ -83,7 +81,7 @@ PUT    /api/custom-agents/{id}    — Update custom agent
 DELETE /api/custom-agents/{id}    — Delete custom agent
 ```
 
-## Handler Pattern (from multica)
+## Handler Pattern
 
 Every handler follows this pattern:
 
@@ -120,7 +118,7 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-## WebSocket Events (from multica's realtime pattern)
+## WebSocket Events
 
 Events broadcast to connected clients:
 
@@ -139,7 +137,7 @@ Events broadcast to connected clients:
 
 ## Error Response Format
 
-Always use this format (same as multica):
+Always use this format:
 
 ```go
 func writeError(w http.ResponseWriter, status int, message string) {
@@ -151,7 +149,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 ## Authentication Middleware
 
-Two separate auth middlewares (same as multica):
+Two separate auth middlewares:
 
 1. **DaemonAuth** — Validates daemon PAT tokens (prefix `af_`)
 2. **Auth** — Validates user PAT tokens (also prefix `af_`)

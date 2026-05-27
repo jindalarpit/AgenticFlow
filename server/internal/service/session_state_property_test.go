@@ -3,7 +3,7 @@ package service
 import (
 	"testing"
 
-	"github.com/agenticflow/agenticflow/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
 	"pgregory.net/rapid"
 )
 

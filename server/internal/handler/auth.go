@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/agenticflow/agenticflow/internal/auth"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/auth"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // loginRequest is the JSON body for POST /auth/login.

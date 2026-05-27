@@ -5,29 +5,27 @@ fileMatchPattern: "**/migrations/**,**/db/**,**sqlc**"
 
 # Database Patterns
 
-Reference: `/Users/arpit.jindal/workspace/opensource/multica/server/migrations/`
-
 ## Migration Naming
 
-Follow multica's convention: `NNN_description.up.sql` / `NNN_description.down.sql`
+Follow this convention: `NNN_description.up.sql` / `NNN_description.down.sql`
 
 Example:
 - `001_init.up.sql` / `001_init.down.sql`
 - `002_custom_agents.up.sql` / `002_custom_agents.down.sql`
 
-## Core Tables (Simplified from multica)
+## Core Tables (Simplified)
 
 AgenticFlow needs ONLY these tables (no issues, projects, comments, labels, etc.):
 
 1. **user** — Authenticated users
 2. **personal_access_token** — PATs for auth (90-day expiry)
 3. **daemon** — Registered daemon connections
-4. **agent_runtime** — Detected CLIs per daemon (like multica's agent_runtime)
-5. **agent** — User-created agents bound to runtimes (like multica's agent)
-6. **task** — Task queue + execution history (like multica's agent_task_queue)
-7. **task_message** — Streaming output per task (like multica's task_messages)
+4. **agent_runtime** — Detected CLIs per daemon
+5. **agent** — User-created agents bound to runtimes
+6. **task** — Task queue + execution history
+7. **task_message** — Streaming output per task
 
-## Key Schema Patterns (from multica)
+## Key Schema Patterns
 
 ### UUIDs
 - Use `UUID PRIMARY KEY DEFAULT gen_random_uuid()` for all IDs
@@ -45,7 +43,7 @@ AgenticFlow needs ONLY these tables (no issues, projects, comments, labels, etc.
 - Always use `ON DELETE CASCADE` for child tables
 - Reference parent by UUID
 
-### Runtime Registration (from multica's UpsertAgentRuntime)
+### Runtime Registration
 
 The daemon register endpoint uses UPSERT (INSERT ... ON CONFLICT UPDATE):
 - Unique constraint on `(daemon_id, provider)` for agent_runtime
@@ -68,7 +66,7 @@ sql:
         emit_json_tags: true
 ```
 
-## Query Patterns (from multica)
+## Query Patterns
 
 ### Task Claiming (Critical Path)
 

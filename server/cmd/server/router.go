@@ -16,11 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/agenticflow/agenticflow/internal/handler"
-	"github.com/agenticflow/agenticflow/internal/middleware"
-	"github.com/agenticflow/agenticflow/internal/realtime"
-	"github.com/agenticflow/agenticflow/internal/service"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/handler"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/service"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // defaultOrigins are the allowed CORS origins for local development.

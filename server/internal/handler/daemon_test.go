@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 

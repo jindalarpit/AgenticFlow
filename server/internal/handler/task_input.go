@@ -11,8 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
-	"github.com/agenticflow/agenticflow/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
 )
 
 // maxInputTextLength is the maximum allowed length for task input text.

@@ -14,9 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/agenticflow/agenticflow/internal/auth"
-	"github.com/agenticflow/agenticflow/internal/middleware"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/auth"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 	"pgregory.net/rapid"
 )
 

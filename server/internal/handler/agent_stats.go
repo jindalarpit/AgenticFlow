@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
 )
 
 // AgentStatsResponse is the JSON response for GET /api/agents/{id}/stats.

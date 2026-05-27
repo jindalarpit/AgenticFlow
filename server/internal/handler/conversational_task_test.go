@@ -3,7 +3,7 @@ package handler
 import (
 	"testing"
 
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // ---------------------------------------------------------------------------

@@ -99,7 +99,7 @@ export function Layout({ children }: LayoutProps) {
         </div>
         <ConnectionIndicator status={status} />
       </header>
-      <main className="flex-1">{children}</main>
+      <main className="flex-1 overflow-hidden">{children}</main>
     </div>
   );
 }

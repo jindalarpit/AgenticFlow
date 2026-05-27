@@ -11,8 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/agenticflow/agenticflow/internal/auth"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/auth"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // Context keys for user identity.

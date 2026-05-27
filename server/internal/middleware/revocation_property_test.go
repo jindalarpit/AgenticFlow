@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
 	"pgregory.net/rapid"
 )
 

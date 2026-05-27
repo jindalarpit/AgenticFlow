@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agenticflow/agenticflow/internal/auth"
+	"github.com/agenticflow/agenticflow/server/internal/auth"
 	"pgregory.net/rapid"
 )
 

@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // TestToTaskMessageResponse_IncludesStreamField verifies that the response

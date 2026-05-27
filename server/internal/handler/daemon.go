@@ -10,10 +10,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
-	"github.com/agenticflow/agenticflow/internal/realtime"
-	"github.com/agenticflow/agenticflow/internal/service"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/service"
+	"github.com/agenticflow/agenticflow/shared/api"
+	"github.com/agenticflow/agenticflow/shared/constants"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // DaemonHandler holds dependencies for daemon API handlers.
@@ -30,23 +32,16 @@ func NewDaemonHandler(queries *db.Queries, hub *realtime.Hub) *DaemonHandler {
 }
 
 // ---------------------------------------------------------------------------
-// Request/Response types
+// Request/Response types — aliased from shared/api for backward compatibility
 // ---------------------------------------------------------------------------
 
 // AgentInfo represents a single agent entry in the register request.
-type AgentInfo struct {
-	Path    string `json:"path"`
-	Model   string `json:"model"`
-	Version string `json:"version"`
-}
+// Aliased from shared/api.AgentInfo.
+type AgentInfo = api.AgentInfo
 
 // DaemonRegisterReq is the request body for POST /api/daemon/register.
-type DaemonRegisterReq struct {
-	DaemonID   string               `json:"daemon_id"`
-	DeviceName string               `json:"device_name"`
-	CLIVersion string               `json:"cli_version"`
-	Agents     map[string]AgentInfo `json:"agents"`
-}
+// Aliased from shared/api.DaemonRegisterRequest.
+type DaemonRegisterReq = api.DaemonRegisterRequest
 
 // DaemonDeregisterReq is the request body for POST /api/daemon/deregister.
 type DaemonDeregisterReq struct {
@@ -59,41 +54,20 @@ type DaemonHeartbeatReq struct {
 }
 
 // TaskCompleteReq is the request body for POST /api/daemon/tasks/{taskId}/complete.
-// Extended with session_id and work_dir for conversational task completion.
-type TaskCompleteReq struct {
-	Output    string `json:"output"`
-	ExitCode  int32  `json:"exit_code"`
-	SessionID string `json:"session_id,omitempty"`
-	WorkDir   string `json:"work_dir,omitempty"`
-}
+// Aliased from shared/api.TaskCompleteRequest.
+type TaskCompleteReq = api.TaskCompleteRequest
 
 // TaskFailReq is the request body for POST /api/daemon/tasks/{taskId}/fail.
-type TaskFailReq struct {
-	ErrorMessage string `json:"error_message"`
-	ExitCode     int32  `json:"exit_code"`
-}
+// Aliased from shared/api.TaskFailRequest.
+type TaskFailReq = api.TaskFailRequest
 
 // TaskMessageEntry represents a single message in the messages request.
-// Supports both legacy format (sequence + stream + content) and structured
-// format (seq + type + tool + content + input + output).
-type TaskMessageEntry struct {
-	// Legacy fields
-	Sequence int32  `json:"sequence"`
-	Stream   string `json:"stream"`
-	Content  string `json:"content"`
-
-	// Structured fields (new)
-	Seq    int32          `json:"seq"`
-	Type   string         `json:"type,omitempty"`
-	Tool   string         `json:"tool,omitempty"`
-	Input  map[string]any `json:"input,omitempty"`
-	Output string         `json:"output,omitempty"`
-}
+// Aliased from shared/api.TaskMessageEntry.
+type TaskMessageEntry = api.TaskMessageEntry
 
 // TaskMessagesReq is the request body for POST /api/daemon/tasks/{taskId}/messages.
-type TaskMessagesReq struct {
-	Messages []TaskMessageEntry `json:"messages"`
-}
+// Aliased from shared/api.TaskMessagesRequest.
+type TaskMessagesReq = api.TaskMessagesRequest
 
 // TaskInputStateReq is the request body for POST /api/daemon/tasks/{taskId}/input-state.
 type TaskInputStateReq struct {
@@ -253,7 +227,7 @@ func (h *DaemonHandler) Deregister(w http.ResponseWriter, r *http.Request) {
 	// Mark daemon offline.
 	if err := h.Queries.UpdateDaemonStatus(r.Context(), db.UpdateDaemonStatusParams{
 		ID:     daemon.ID,
-		Status: "offline",
+		Status: constants.DaemonStatusOffline,
 	}); err != nil {
 		slog.Error("daemon deregister: update status failed", "error", err)
 		writeErrorJSON(w, http.StatusInternalServerError, "failed to update daemon status")

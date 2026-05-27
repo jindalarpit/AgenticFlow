@@ -6,8 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
-	"github.com/agenticflow/agenticflow/internal/realtime"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
+	"github.com/agenticflow/agenticflow/shared/constants"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -16,18 +17,18 @@ type AgentStatus string
 
 const (
 	// AgentStatusOffline indicates the agent's runtime daemon is offline.
-	AgentStatusOffline AgentStatus = "offline"
+	AgentStatusOffline AgentStatus = AgentStatus(constants.AgentStatusOffline)
 	// AgentStatusWorking indicates the agent has at least one running task.
-	AgentStatusWorking AgentStatus = "working"
+	AgentStatusWorking AgentStatus = AgentStatus(constants.AgentStatusWorking)
 	// AgentStatusIdle indicates the agent is online with no running tasks.
-	AgentStatusIdle AgentStatus = "idle"
+	AgentStatusIdle AgentStatus = AgentStatus(constants.AgentStatusIdle)
 )
 
 // DeriveAgentStatus computes the agent's status from runtime state and active task count.
 // Priority order: offline > working > idle.
 // This is a pure function exposed for easy unit and property-based testing.
 func DeriveAgentStatus(runtimeStatus string, activeTaskCount int) AgentStatus {
-	if runtimeStatus == "offline" {
+	if runtimeStatus == constants.DaemonStatusOffline {
 		return AgentStatusOffline
 	}
 	if activeTaskCount > 0 {
@@ -71,7 +72,7 @@ func (s *AgentStatusService) DeriveStatus(ctx context.Context, agentID pgtype.UU
 		return "", fmt.Errorf("get daemon: %w", err)
 	}
 
-	if daemon.Status == "offline" {
+	if daemon.Status == constants.DaemonStatusOffline {
 		return AgentStatusOffline, nil
 	}
 

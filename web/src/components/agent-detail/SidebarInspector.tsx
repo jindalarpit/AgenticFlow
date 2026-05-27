@@ -28,7 +28,7 @@ interface SidebarInspectorProps {
  */
 export function SidebarInspector({ agent, isOwner, onUpdate }: SidebarInspectorProps) {
   return (
-    <aside className="w-full md:w-[320px] md:border-r border-gray-200 overflow-y-auto">
+    <aside className="w-full md:w-[320px] md:min-w-[320px] md:max-w-[320px] md:border-r border-gray-200 overflow-y-auto overflow-x-hidden">
       <IdentitySection agent={agent} isOwner={isOwner} onUpdate={onUpdate} />
       <PropertiesSection agent={agent} isOwner={isOwner} onUpdate={onUpdate} />
       <DetailsSection agent={agent} />

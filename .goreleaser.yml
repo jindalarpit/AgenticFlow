@@ -5,7 +5,7 @@ project_name: af
 builds:
   - id: af
     main: ./cmd/af
-    dir: server
+    dir: daemon
     binary: af
     ldflags:
       - -s -w

@@ -192,12 +192,12 @@ export default function AgentDetail() {
   if (!agent) return null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Page Header */}
       <PageHeader agent={agent} isOwner={isOwner} onDelete={handleDelete} />
 
       {/* Two-column layout: responsive grid on desktop, stacked on mobile */}
-      <div className="flex-1 flex flex-col gap-3 overflow-y-auto md:grid md:grid-cols-[320px_minmax(0,1fr)] md:gap-4 md:overflow-hidden">
+      <div className="flex-1 flex flex-col gap-3 overflow-y-auto md:grid md:grid-cols-[320px_minmax(0,1fr)] md:gap-0 md:overflow-hidden">
         {/* Sidebar Inspector */}
         <SidebarInspector agent={agent} isOwner={isOwner} onUpdate={handleUpdate} />
 

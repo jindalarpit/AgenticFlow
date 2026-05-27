@@ -3,7 +3,7 @@ package service
 import (
 	"sync"
 
-	"github.com/agenticflow/agenticflow/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
 )
 
 // SessionState represents the interaction state of a running task.

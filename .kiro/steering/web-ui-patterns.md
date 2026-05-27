@@ -29,7 +29,7 @@ fileMatchPattern: "**/web/**"
 
 ## Dashboard Layout
 
-The dashboard shows three sections (similar to multica's workspace view):
+The dashboard shows three sections:
 
 1. **Connected Daemons** — Card per daemon showing: device name, status (online/offline), detected runtimes list, last heartbeat time
 2. **Agents** — Card per agent showing: name, bound runtime, status (idle/working/offline), model
@@ -90,7 +90,7 @@ class WSClient {
 
 ## Agent Form Fields
 
-The agent create/edit form must include (matching multica's agent UI):
+The agent create/edit form must include:
 
 ```tsx
 <form>

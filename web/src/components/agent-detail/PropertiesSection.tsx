@@ -20,7 +20,7 @@ interface PropertiesSectionProps {
  */
 export function PropertiesSection({ agent, isOwner, onUpdate }: PropertiesSectionProps) {
   return (
-    <section aria-labelledby="properties-heading">
+    <section aria-labelledby="properties-heading" className="px-5 py-4 border-b border-gray-100 overflow-hidden">
       <h3
         id="properties-heading"
         className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3"
@@ -28,7 +28,7 @@ export function PropertiesSection({ agent, isOwner, onUpdate }: PropertiesSectio
         Properties
       </h3>
       <div className="space-y-3">
-        <RuntimeRow agent={agent} isOwner={isOwner} onUpdate={onUpdate} />
+        <RuntimeRow agent={agent} />
         <ModelRow agent={agent} isOwner={isOwner} onUpdate={onUpdate} />
         <VisibilityRow agent={agent} isOwner={isOwner} onUpdate={onUpdate} />
         <ConcurrencyRow agent={agent} isOwner={isOwner} onUpdate={onUpdate} />
@@ -41,61 +41,24 @@ export function PropertiesSection({ agent, isOwner, onUpdate }: PropertiesSectio
 
 function RuntimeRow({
   agent,
-  isOwner,
-  onUpdate,
-}: PropertiesSectionProps) {
+}: Pick<PropertiesSectionProps, "agent">) {
   const isOnline = agent.status !== "offline";
   const displayName = agent.runtime_name || "Unknown Runtime";
 
   return (
     <PropertyRow label="Runtime">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 min-w-0">
         <span
-          className={`inline-block h-2 w-2 rounded-full ${
+          className={`inline-block h-2 w-2 rounded-full shrink-0 ${
             isOnline ? "bg-green-500" : "bg-gray-400"
           }`}
           aria-label={isOnline ? "Online" : "Offline"}
         />
-        {isOwner ? (
-          <RuntimePicker
-            currentValue={displayName}
-            runtimeId={agent.runtime_id}
-            onUpdate={onUpdate}
-          />
-        ) : (
-          <span className="text-sm text-gray-900">{displayName}</span>
-        )}
+        <span className="text-sm text-gray-900 truncate" title={displayName}>
+          {displayName}
+        </span>
       </div>
     </PropertyRow>
-  );
-}
-
-/* ─── RuntimePicker (owner mode) ─── */
-
-function RuntimePicker({
-  currentValue,
-  runtimeId,
-  onUpdate,
-}: {
-  currentValue: string;
-  runtimeId: string;
-  onUpdate: (data: Partial<Agent>) => Promise<void>;
-}) {
-  // For now, display the current runtime value as a read-only dropdown
-  // since we don't have a runtimes list endpoint in this spec.
-  return (
-    <select
-      value={runtimeId}
-      onChange={(e) => {
-        if (e.target.value !== runtimeId) {
-          void onUpdate({ runtime_id: e.target.value });
-        }
-      }}
-      className="text-sm text-gray-900 bg-transparent border border-gray-200 rounded px-2 py-0.5 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-      aria-label="Select runtime"
-    >
-      <option value={runtimeId}>{currentValue}</option>
-    </select>
   );
 }
 
@@ -152,7 +115,8 @@ function ModelInput({
       <button
         type="button"
         onClick={() => setIsEditing(true)}
-        className="text-sm text-gray-900 hover:text-blue-600 text-left truncate max-w-[180px]"
+        className="text-sm text-gray-900 hover:text-blue-600 text-left truncate"
+        title={currentValue || "Default"}
         aria-label="Edit model"
       >
         {currentValue || "Default"}
@@ -167,8 +131,8 @@ function ModelInput({
       onChange={(e) => setValue(e.target.value)}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      placeholder="e.g., claude-sonnet-4-20250514"
-      className="text-sm text-gray-900 bg-transparent border border-gray-200 rounded px-2 py-0.5 w-full max-w-[180px] focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+      placeholder="e.g., github-copilot/claude-sonnet-4.5"
+      className="text-sm text-gray-900 bg-transparent border border-gray-200 rounded px-2 py-0.5 w-full focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
       aria-label="Model name"
       autoFocus
     />
@@ -298,9 +262,9 @@ function PropertyRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm text-gray-500">{label}</span>
-      <div className="flex items-center">{children}</div>
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-sm text-gray-500 shrink-0">{label}</span>
+      <div className="flex items-center min-w-0 truncate">{children}</div>
     </div>
   );
 }

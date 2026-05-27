@@ -4,11 +4,11 @@ inclusion: always
 
 # Agent & Task Delegation Flow
 
-This is the CORE flow of AgenticFlow. It must work exactly like multica's agent → daemon → CLI execution pipeline.
+This is the CORE flow of AgenticFlow — the agent → daemon → CLI execution pipeline.
 
 ## Default Agent: "Nexus"
 
-On first user setup, create a default agent called **"Nexus"** (similar to multica's "Orion"):
+On first user setup, create a default agent called **"Nexus"**:
 
 - Name: "Nexus"
 - Description: "Your local AI coding agent"
@@ -19,9 +19,9 @@ On first user setup, create a default agent called **"Nexus"** (similar to multi
 - Custom env: empty
 - Custom args: empty
 
-## Agent Data Model (from multica's agent table)
+## Agent Data Model
 
-An agent in AgenticFlow has these fields (mirror multica's agent response):
+An agent in AgenticFlow has these fields:
 
 ```json
 {
@@ -45,7 +45,7 @@ An agent in AgenticFlow has these fields (mirror multica's agent response):
 
 ## Agent Screen Fields (Web UI)
 
-The agent creation/edit form must have these fields (same as multica):
+The agent creation/edit form must have these fields:
 
 1. **Name** — Text input, required, 1-64 chars
 2. **Description** — Textarea, optional, max 255 chars
@@ -57,7 +57,7 @@ The agent creation/edit form must have these fields (same as multica):
 8. **Max Concurrent Tasks** — Number input (1-20)
 9. **Visibility** — Toggle: private (only you) or shared
 
-## Task Delegation Flow (MUST match multica)
+## Task Delegation Flow
 
 ```
 1. User creates task via Web UI:
@@ -96,7 +96,7 @@ The agent creation/edit form must have these fields (same as multica):
    - Web UI updates status badge, shows final output
 ```
 
-## Task Claim Response (from multica)
+## Task Claim Response
 
 When the daemon claims a task, the server returns:
 
@@ -118,7 +118,7 @@ When the daemon claims a task, the server returns:
 
 ## Task Messages (Streaming Output)
 
-The daemon sends output in chunks (same as multica's `ReportTaskMessages`):
+The daemon sends output in chunks:
 
 ```json
 {
@@ -141,7 +141,7 @@ The daemon sends output in chunks (same as multica's `ReportTaskMessages`):
 
 These are broadcast to the Web UI via WebSocket as `task_output` events for real-time display.
 
-## Agent Status Derivation (from multica)
+## Agent Status Derivation
 
 Agent status is derived from its tasks:
 - **idle** — No running tasks

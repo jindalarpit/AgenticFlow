@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // RuntimeHandler holds dependencies for runtime-related HTTP handlers.

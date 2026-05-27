@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/agenticflow/agenticflow/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
 )
 
 var (

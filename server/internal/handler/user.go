@@ -12,11 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/agenticflow/agenticflow/internal/auth"
-	"github.com/agenticflow/agenticflow/internal/middleware"
-	"github.com/agenticflow/agenticflow/internal/realtime"
-	"github.com/agenticflow/agenticflow/internal/service"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/auth"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/service"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // customAgentNameRegex validates custom agent names.

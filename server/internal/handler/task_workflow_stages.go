@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // validDeliverables is the set of accepted deliverable values.

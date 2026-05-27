@@ -14,9 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/agenticflow/agenticflow/internal/middleware"
-	"github.com/agenticflow/agenticflow/internal/realtime"
-	db "github.com/agenticflow/agenticflow/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/realtime"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 // Validation constants for agent fields.

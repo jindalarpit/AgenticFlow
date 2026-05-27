@@ -69,7 +69,7 @@ export function OverviewPane({ agent, isOwner, onSave }: OverviewPaneProps) {
   }, []);
 
   return (
-    <div className="flex flex-col min-h-[60vh]">
+    <div className="flex flex-col h-full overflow-hidden">
       <TabBar activeTab={activeTab} onTabChange={requestTabChange} />
 
       {/* DirtyGuard confirmation dialog */}

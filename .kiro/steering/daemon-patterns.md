@@ -5,11 +5,9 @@ fileMatchPattern: "**/daemon/**,**/cmd/af/**"
 
 # Daemon Implementation Patterns
 
-Reference: `/Users/arpit.jindal/workspace/opensource/multica/server/internal/daemon/`
+## Config Resolution
 
-## Config Resolution (from multica/server/internal/daemon/config.go)
-
-Follow the exact same pattern as multica's `LoadConfig()`:
+Follow this pattern for `LoadConfig()`:
 
 ```go
 // Resolution order: CLI flags > env vars > config file > defaults
@@ -20,7 +18,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 }
 ```
 
-Environment variable naming: `AF_<SETTING>` (not `MULTICA_`)
+Environment variable naming: `AF_<SETTING>`
 - `AF_SERVER_URL` (default: `http://localhost:8080`)
 - `AF_DAEMON_POLL_INTERVAL` (default: `3s`)
 - `AF_DAEMON_HEARTBEAT_INTERVAL` (default: `15s`)
@@ -29,9 +27,9 @@ Environment variable naming: `AF_<SETTING>` (not `MULTICA_`)
 - `AF_<AGENT>_PATH` — custom binary path per agent
 - `AF_<AGENT>_MODEL` — model override per agent
 
-## Agent Detection (from multica/server/internal/daemon/config.go)
+## Agent Detection
 
-Use the same `probe()` pattern:
+Use the `probe()` pattern:
 
 ```go
 probe := func(envVar, defaultCmd, modelEnv string) (AgentEntry, bool) {
@@ -39,7 +37,7 @@ probe := func(envVar, defaultCmd, modelEnv string) (AgentEntry, bool) {
     if _, err := exec.LookPath(cmd); err == nil {
         return AgentEntry{Path: cmd, Model: os.Getenv(modelEnv)}, true
     }
-    // Shell fallback for GUI-launched daemons (same as multica)
+    // Shell fallback for GUI-launched daemons
     if path, ok := getShellResolved()[cmd]; ok {
         return AgentEntry{Path: path, Model: os.Getenv(modelEnv)}, true
     }
@@ -47,10 +45,10 @@ probe := func(envVar, defaultCmd, modelEnv string) (AgentEntry, bool) {
 }
 ```
 
-Supported agents (same list as multica):
+Supported agents:
 - claude, codex, opencode, openclaw, hermes, gemini, pi, cursor-agent, copilot, kimi, kiro-cli
 
-## Daemon Run Loop (from multica/server/internal/daemon/daemon.go)
+## Daemon Run Loop
 
 The `Daemon.Run()` method must follow this exact sequence:
 
@@ -67,7 +65,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 ```
 
-## Task Execution (from multica/server/internal/daemon/execenv/)
+## Task Execution
 
 Each task runs in an isolated workspace:
 
@@ -81,7 +79,7 @@ Each task runs in an isolated workspace:
 // 7. On timeout: SIGTERM → wait 10s → SIGKILL
 ```
 
-## Registration Request (from multica/server/internal/handler/daemon.go)
+## Registration Request
 
 The daemon register request must include:
 
