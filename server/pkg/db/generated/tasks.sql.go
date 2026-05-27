@@ -42,7 +42,7 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
 `
 
 type ClaimPendingTaskParams struct {
@@ -69,6 +69,10 @@ func (q *Queries) ClaimPendingTask(ctx context.Context, arg ClaimPendingTaskPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AgentID,
+		&i.Deliverables,
+		&i.WorkspaceMode,
+		&i.WorkspacePath,
+		&i.GitRepoUrl,
 	)
 	return i, err
 }
@@ -76,7 +80,7 @@ func (q *Queries) ClaimPendingTask(ctx context.Context, arg ClaimPendingTaskPara
 const createTask = `-- name: CreateTask :one
 INSERT INTO task (user_id, agent_type, prompt, agent_id)
 VALUES ($1, $2, $3, $4)
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
 `
 
 type CreateTaskParams struct {
@@ -110,46 +114,63 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AgentID,
+		&i.Deliverables,
+		&i.WorkspaceMode,
+		&i.WorkspacePath,
+		&i.GitRepoUrl,
 	)
 	return i, err
 }
 
-const getAgentsRunCounts30d = `-- name: GetAgentsRunCounts30d :many
-SELECT
-    agent_id,
-    COUNT(*)::bigint AS run_count
-FROM task
-WHERE status = 'completed'
-  AND completed_at > now() - INTERVAL '30 days'
-  AND agent_id IS NOT NULL
-GROUP BY agent_id
+const createTaskWithWorkflow = `-- name: CreateTaskWithWorkflow :one
+INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
 `
 
-type GetAgentsRunCounts30dRow struct {
-	AgentID  pgtype.UUID `json:"agent_id"`
-	RunCount int64       `json:"run_count"`
+type CreateTaskWithWorkflowParams struct {
+	UserID        pgtype.UUID `json:"user_id"`
+	AgentType     string      `json:"agent_type"`
+	Prompt        string      `json:"prompt"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	Deliverables  []byte      `json:"deliverables"`
+	WorkspaceMode string      `json:"workspace_mode"`
+	WorkspacePath pgtype.Text `json:"workspace_path"`
 }
 
-// Returns 30-day completed task count per agent for all agents that have
-// at least one completed task in the last 30 days.
-func (q *Queries) GetAgentsRunCounts30d(ctx context.Context) ([]GetAgentsRunCounts30dRow, error) {
-	rows, err := q.db.Query(ctx, getAgentsRunCounts30d)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAgentsRunCounts30dRow{}
-	for rows.Next() {
-		var i GetAgentsRunCounts30dRow
-		if err := rows.Scan(&i.AgentID, &i.RunCount); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+func (q *Queries) CreateTaskWithWorkflow(ctx context.Context, arg CreateTaskWithWorkflowParams) (Task, error) {
+	row := q.db.QueryRow(ctx, createTaskWithWorkflow,
+		arg.UserID,
+		arg.AgentType,
+		arg.Prompt,
+		arg.AgentID,
+		arg.Deliverables,
+		arg.WorkspaceMode,
+		arg.WorkspacePath,
+	)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.AgentType,
+		&i.AgentRuntimeID,
+		&i.DaemonID,
+		&i.Prompt,
+		&i.Status,
+		&i.ExitCode,
+		&i.ErrorMessage,
+		&i.OutputPreview,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AgentID,
+		&i.Deliverables,
+		&i.WorkspaceMode,
+		&i.WorkspacePath,
+		&i.GitRepoUrl,
+	)
+	return i, err
 }
 
 const getAgentStats30d = `-- name: GetAgentStats30d :one
@@ -230,8 +251,46 @@ func (q *Queries) GetAgentsActivity7d(ctx context.Context) ([]GetAgentsActivity7
 	return items, nil
 }
 
+const getAgentsRunCounts30d = `-- name: GetAgentsRunCounts30d :many
+SELECT
+    agent_id,
+    COUNT(*)::bigint AS run_count
+FROM task
+WHERE status = 'completed'
+  AND completed_at > now() - INTERVAL '30 days'
+  AND agent_id IS NOT NULL
+GROUP BY agent_id
+`
+
+type GetAgentsRunCounts30dRow struct {
+	AgentID  pgtype.UUID `json:"agent_id"`
+	RunCount int64       `json:"run_count"`
+}
+
+// Returns 30-day completed task count per agent for all agents that have
+// at least one completed task in the last 30 days.
+func (q *Queries) GetAgentsRunCounts30d(ctx context.Context) ([]GetAgentsRunCounts30dRow, error) {
+	rows, err := q.db.Query(ctx, getAgentsRunCounts30d)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAgentsRunCounts30dRow{}
+	for rows.Next() {
+		var i GetAgentsRunCounts30dRow
+		if err := rows.Scan(&i.AgentID, &i.RunCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getTaskByID = `-- name: GetTaskByID :one
-SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id FROM task
+SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url FROM task
 WHERE id = $1
 `
 
@@ -254,6 +313,10 @@ func (q *Queries) GetTaskByID(ctx context.Context, id pgtype.UUID) (Task, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.AgentID,
+		&i.Deliverables,
+		&i.WorkspaceMode,
+		&i.WorkspacePath,
+		&i.GitRepoUrl,
 	)
 	return i, err
 }
@@ -272,7 +335,7 @@ func (q *Queries) GetTaskDaemonID(ctx context.Context, id pgtype.UUID) (pgtype.U
 }
 
 const listTasksByAgent = `-- name: ListTasksByAgent :many
-SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id FROM task
+SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url FROM task
 WHERE agent_id = $1 AND user_id = $2
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4
@@ -315,6 +378,10 @@ func (q *Queries) ListTasksByAgent(ctx context.Context, arg ListTasksByAgentPara
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.AgentID,
+			&i.Deliverables,
+			&i.WorkspaceMode,
+			&i.WorkspacePath,
+			&i.GitRepoUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -327,7 +394,7 @@ func (q *Queries) ListTasksByAgent(ctx context.Context, arg ListTasksByAgentPara
 }
 
 const listTasksByUser = `-- name: ListTasksByUser :many
-SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id FROM task
+SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url FROM task
 WHERE user_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -364,6 +431,10 @@ func (q *Queries) ListTasksByUser(ctx context.Context, arg ListTasksByUserParams
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.AgentID,
+			&i.Deliverables,
+			&i.WorkspaceMode,
+			&i.WorkspacePath,
+			&i.GitRepoUrl,
 		); err != nil {
 			return nil, err
 		}

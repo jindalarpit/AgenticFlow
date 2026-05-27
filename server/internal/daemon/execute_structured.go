@@ -16,7 +16,33 @@ import (
 //
 // This method is called from executeTask when the agent type is supported
 // by the new backend architecture.
+//
+// Routing priority:
+//  1. If the poll response contains a deliverable_type field, the daemon uses
+//     the conversational execution path (session-based, stdout = deliverable).
+//  2. If the poll response contains a current_stage field, the daemon executes
+//     only that single stage (legacy staged execution with approval gates).
+//  3. Otherwise, the daemon uses the existing single-pass flow (backward compat).
 func (d *Daemon) executeTaskStructured(ctx context.Context, task *PollResponse) {
+	// Branch: conversational task (deliverable_type present).
+	if task.DeliverableType != "" {
+		d.executeConversationalStage(ctx, task)
+		return
+	}
+
+	// Branch: legacy staged execution vs single-pass.
+	if task.CurrentStage != nil {
+		d.executeStage(ctx, task, task.CurrentStage, task.PriorStages)
+		return
+	}
+
+	// Single-pass execution (existing flow, backward compatible).
+	d.executeTaskStructuredSinglePass(ctx, task)
+}
+
+// executeTaskStructuredSinglePass is the original single-pass execution flow.
+// It is called when the task has no workflow stages (backward compatibility).
+func (d *Daemon) executeTaskStructuredSinglePass(ctx context.Context, task *PollResponse) {
 	taskID := task.TaskID
 	logger := d.logger.With("task_id", taskID, "agent_type", task.AgentType)
 

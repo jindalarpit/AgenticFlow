@@ -161,9 +161,18 @@ func (h *UserHandler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) 
 
 // CreateTaskReq is the request body for POST /api/tasks.
 type CreateTaskReq struct {
-	AgentType string `json:"agent_type"`
-	Prompt    string `json:"prompt"`
-	AgentID   string `json:"agent_id,omitempty"`
+	AgentType     string   `json:"agent_type"`
+	Prompt        string   `json:"prompt"`
+	AgentID       string   `json:"agent_id,omitempty"`
+	Deliverables  []string `json:"deliverables,omitempty"`
+	WorkspaceMode string   `json:"workspace_mode,omitempty"`
+	WorkspacePath string   `json:"workspace_path,omitempty"`
+
+	// Conversational task fields (when deliverable_type is present, uses conversational flow).
+	DeliverableType    string   `json:"deliverable_type,omitempty"`
+	PriorContext       []string `json:"prior_context,omitempty"`
+	GitRepoURL         string   `json:"git_repo_url,omitempty"`
+	LocalDirectoryPath string   `json:"local_directory_path,omitempty"`
 }
 
 // CreateTask creates a new task for the authenticated user.
@@ -237,13 +246,64 @@ func (h *UserHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create the task with status "pending". The task will be picked up by the
-	// daemon when it polls, even if the agent's runtime is currently offline.
-	task, err := h.Queries.CreateTask(r.Context(), db.CreateTaskParams{
-		UserID:    userUUID,
-		AgentType: req.AgentType,
-		Prompt:    req.Prompt,
-		AgentID:   agentID,
+	// --- Conversational task flow (deliverable_type present) ---
+	if req.DeliverableType != "" {
+		h.createConversationalTask(w, r, req, userUUID, agentID)
+		return
+	}
+
+	// --- Legacy multi-stage / single-pass flow (deliverable_type absent) ---
+
+	// Default deliverables to ["execution"] when omitted or empty.
+	deliverables := req.Deliverables
+	if len(deliverables) == 0 {
+		deliverables = []string{"execution"}
+	} else {
+		// Validate deliverables when explicitly provided.
+		if errMsg := validateDeliverables(deliverables); errMsg != "" {
+			writeErrorJSON(w, http.StatusBadRequest, errMsg)
+			return
+		}
+	}
+
+	// Default workspace_mode to "isolated" when omitted.
+	workspaceMode := req.WorkspaceMode
+	if workspaceMode == "" {
+		workspaceMode = "isolated"
+	} else {
+		if errMsg := validateWorkspaceMode(workspaceMode); errMsg != "" {
+			writeErrorJSON(w, http.StatusBadRequest, errMsg)
+			return
+		}
+	}
+
+	// Validate workspace_path based on mode.
+	if errMsg := validateWorkspacePath(workspaceMode, req.WorkspacePath); errMsg != "" {
+		writeErrorJSON(w, http.StatusBadRequest, errMsg)
+		return
+	}
+
+	// Determine if this is a single-pass task (no stages needed).
+	// Single-pass: deliverables is ["execution"] only, or deliverables was omitted.
+	singlePass := len(deliverables) == 1 && deliverables[0] == "execution"
+
+	// Serialize deliverables to JSON for storage.
+	deliverablesJSON, err := json.Marshal(deliverables)
+	if err != nil {
+		slog.Error("create task: marshal deliverables failed", "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to create task")
+		return
+	}
+
+	// Create the task with workflow fields.
+	task, err := h.Queries.CreateTaskWithWorkflow(r.Context(), db.CreateTaskWithWorkflowParams{
+		UserID:        userUUID,
+		AgentType:     req.AgentType,
+		Prompt:        req.Prompt,
+		AgentID:       agentID,
+		Deliverables:  deliverablesJSON,
+		WorkspaceMode: workspaceMode,
+		WorkspacePath: pgtype.Text{String: req.WorkspacePath, Valid: req.WorkspacePath != ""},
 	})
 	if err != nil {
 		slog.Error("create task: insert failed", "error", err)
@@ -252,6 +312,25 @@ func (h *UserHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskIDStr := uuidToString(task.ID)
+
+	// Create task_stage rows for multi-stage workflows (not single-pass).
+	if !singlePass {
+		// Sort deliverables by canonical order and create stage rows.
+		sortedDeliverables := orderDeliverables(deliverables)
+		for _, d := range sortedDeliverables {
+			_, err := h.Queries.CreateTaskStage(r.Context(), db.CreateTaskStageParams{
+				TaskID:     task.ID,
+				StageName:  d,
+				StageOrder: int32(deliverableOrder[d]),
+			})
+			if err != nil {
+				slog.Error("create task: create stage failed",
+					"task_id", taskIDStr, "stage", d, "error", err)
+				writeErrorJSON(w, http.StatusInternalServerError, "failed to create task stages")
+				return
+			}
+		}
+	}
 
 	// Broadcast task_created event via WebSocket.
 	if h.Hub != nil {

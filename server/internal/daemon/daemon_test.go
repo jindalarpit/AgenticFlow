@@ -110,6 +110,18 @@ func (m *mockHTTPClient) ReportInputState(_ context.Context, _ string, _ string)
 	return m.reportInputStateErr
 }
 
+func (m *mockHTTPClient) ReportStageCompletion(_ context.Context, _ string, _ string, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil
+}
+
+func (m *mockHTTPClient) CompleteTaskConversational(_ context.Context, _ string, _ string, _ string, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil
+}
+
 func (m *mockHTTPClient) getHeartbeatCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

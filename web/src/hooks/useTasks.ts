@@ -37,10 +37,18 @@ export interface TasksResponse {
   total: number;
 }
 
-interface CreateTaskInput {
+export interface CreateTaskInput {
   agent_type: string;
   prompt: string;
   agent_id?: string;
+  deliverables?: string[];
+  workspace_mode?: string;
+  workspace_path?: string;
+  /** Conversational task fields */
+  deliverable_type?: string;
+  git_repo_url?: string;
+  local_directory_path?: string;
+  prior_context?: string[];
 }
 
 /**

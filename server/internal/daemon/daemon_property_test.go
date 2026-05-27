@@ -159,6 +159,12 @@ func (m *mockPollClient) ReportMessages(_ context.Context, _ string, _ []TaskMes
 func (m *mockPollClient) ReportInputState(_ context.Context, _ string, _ string) error {
 	return nil
 }
+func (m *mockPollClient) ReportStageCompletion(_ context.Context, _ string, _ string, _ string) error {
+	return nil
+}
+func (m *mockPollClient) CompleteTaskConversational(_ context.Context, _ string, _ string, _ string, _ string) error {
+	return nil
+}
 
 // Feature: agenticflow-core, Property 8: Concurrent Task Polling Suppression
 // For any daemon state where activeTasks equals maxConcurrentTasks, pollForTasks
@@ -422,6 +428,12 @@ func (s *sequentialHeartbeatClient) ReportMessages(_ context.Context, _ string, 
 	return nil
 }
 func (s *sequentialHeartbeatClient) ReportInputState(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (s *sequentialHeartbeatClient) ReportStageCompletion(_ context.Context, _ string, _ string, _ string) error {
+	return nil
+}
+func (s *sequentialHeartbeatClient) CompleteTaskConversational(_ context.Context, _ string, _ string, _ string, _ string) error {
 	return nil
 }
 
@@ -729,6 +741,12 @@ func (c *concurrencyLimitClient) ReportMessages(_ context.Context, _ string, _ [
 	return nil
 }
 func (c *concurrencyLimitClient) ReportInputState(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (c *concurrencyLimitClient) ReportStageCompletion(_ context.Context, _ string, _ string, _ string) error {
+	return nil
+}
+func (c *concurrencyLimitClient) CompleteTaskConversational(_ context.Context, _ string, _ string, _ string, _ string) error {
 	return nil
 }
 

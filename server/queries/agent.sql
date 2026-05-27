@@ -36,7 +36,7 @@ WHERE agent_id = $1 AND status = 'running';
 
 -- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), updated_at = now()
-WHERE id = $1 AND (user_id = $2 OR $3::boolean = true)
+WHERE id = $1 AND (user_id = $2 OR sqlc.arg('is_admin')::boolean = true)
 RETURNING *;
 
 -- name: RestoreAgent :one

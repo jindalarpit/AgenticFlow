@@ -19,7 +19,7 @@ describe("ToolCallCard", () => {
     };
 
     render(<ToolCallCard item={item} />);
-    expect(screen.getByText("read_file")).toBeDefined();
+    expect(screen.getAllByText("read_file").length).toBeGreaterThan(0);
   });
 
   it("displays input parameter summary for tool_use events", () => {
@@ -33,7 +33,7 @@ describe("ToolCallCard", () => {
     };
 
     render(<ToolCallCard item={item} />);
-    expect(screen.getByText("write_file")).toBeDefined();
+    expect(screen.getAllByText("write_file").length).toBeGreaterThan(0);
   });
 
   it("handles missing input gracefully", () => {
@@ -47,7 +47,7 @@ describe("ToolCallCard", () => {
     };
 
     render(<ToolCallCard item={item} />);
-    expect(screen.getByText("terminal")).toBeDefined();
+    expect(screen.getAllByText("terminal").length).toBeGreaterThan(0);
   });
 });
 

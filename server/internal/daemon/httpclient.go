@@ -126,20 +126,49 @@ func (c *RealHTTPClient) PollTasks(ctx context.Context, req PollRequest) (*PollR
 	if len(data) == 0 {
 		return &PollResponse{}, nil
 	}
-	// The server returns "id" but PollResponse uses "task_id", so decode manually.
+	// Decode the full poll response including optional stage and conversational fields.
 	var raw struct {
-		ID        string `json:"id"`
-		AgentType string `json:"agent_type"`
-		Prompt    string `json:"prompt"`
-		Status    string `json:"status"`
+		ID            string            `json:"id"`
+		AgentType     string            `json:"agent_type"`
+		Prompt        string            `json:"prompt"`
+		Status        string            `json:"status"`
+		Model         string            `json:"model"`
+		ArgsTemplate  string            `json:"args_template"`
+		EnvVars       map[string]string `json:"env_vars"`
+		Agent         *TaskAgentData    `json:"agent"`
+		CurrentStage  *StageInfo        `json:"current_stage"`
+		PriorStages   []PriorStage      `json:"prior_stages"`
+		WorkspaceMode string            `json:"workspace_mode"`
+		WorkspacePath string            `json:"workspace_path"`
+		StageFeedback string            `json:"stage_feedback"`
+		// Conversational task fields.
+		DeliverableType string           `json:"deliverable_type"`
+		PriorSessionID  string           `json:"prior_session_id"`
+		PriorContext    []string         `json:"prior_context"`
+		PriorWorkDir    string           `json:"prior_work_dir"`
+		WorkspaceConfig *WorkspaceConfig `json:"workspace_config"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decode poll response: %w", err)
 	}
 	return &PollResponse{
-		TaskID:    raw.ID,
-		AgentType: raw.AgentType,
-		Prompt:    raw.Prompt,
+		TaskID:          raw.ID,
+		AgentType:       raw.AgentType,
+		Prompt:          raw.Prompt,
+		Model:           raw.Model,
+		ArgsTemplate:    raw.ArgsTemplate,
+		EnvVars:         raw.EnvVars,
+		Agent:           raw.Agent,
+		CurrentStage:    raw.CurrentStage,
+		PriorStages:     raw.PriorStages,
+		WorkspaceMode:   raw.WorkspaceMode,
+		WorkspacePath:   raw.WorkspacePath,
+		StageFeedback:   raw.StageFeedback,
+		DeliverableType: raw.DeliverableType,
+		PriorSessionID:  raw.PriorSessionID,
+		PriorContext:    raw.PriorContext,
+		PriorWorkDir:    raw.PriorWorkDir,
+		WorkspaceConfig: raw.WorkspaceConfig,
 	}, nil
 }
 
@@ -189,5 +218,32 @@ func (c *RealHTTPClient) ReportInputState(ctx context.Context, taskID string, st
 		"state": state,
 	}
 	_, err := c.doJSON(ctx, "POST", "/api/daemon/tasks/"+taskID+"/input-state", body)
+	return err
+}
+
+// ReportStageCompletion reports a workflow stage completion to the server.
+// POST /api/daemon/tasks/{taskId}/stages/{stageName}/complete
+func (c *RealHTTPClient) ReportStageCompletion(ctx context.Context, taskID, stageName, outputContent string) error {
+	body := map[string]interface{}{
+		"output_content": outputContent,
+	}
+	_, err := c.doJSON(ctx, "POST", "/api/daemon/tasks/"+taskID+"/stages/"+stageName+"/complete", body)
+	return err
+}
+
+// CompleteTaskConversational reports conversational task completion with session tracking.
+// POST /api/daemon/tasks/{id}/complete with session_id and work_dir fields.
+func (c *RealHTTPClient) CompleteTaskConversational(ctx context.Context, taskID, output, sessionID, workDir string) error {
+	body := map[string]interface{}{
+		"output":    output,
+		"exit_code": 0,
+	}
+	if sessionID != "" {
+		body["session_id"] = sessionID
+	}
+	if workDir != "" {
+		body["work_dir"] = workDir
+	}
+	_, err := c.doJSON(ctx, "POST", "/api/daemon/tasks/"+taskID+"/complete", body)
 	return err
 }
