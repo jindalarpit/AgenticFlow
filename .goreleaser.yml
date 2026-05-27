@@ -38,7 +38,7 @@ changelog:
       - "^test:"
       - "^chore:"
 
-homebrew:
+homebrew_casks:
   - name: af
     ids:
       - versioned
@@ -47,11 +47,8 @@ homebrew:
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
     homepage: "https://github.com/agenticflow/agenticflow"
     description: "AgenticFlow CLI — local agent runtime and management tool"
     license: "Apache-2.0"
-    install: |
-      bin.install "af"
-    test: |
-      system "#{bin}/af", "version"
+    binaries:
+      - af

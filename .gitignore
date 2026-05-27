@@ -7,6 +7,7 @@ server/bin/
 server/af
 server/server
 web/dist/
+dist/
 *.exe
 *.dll
 *.so
