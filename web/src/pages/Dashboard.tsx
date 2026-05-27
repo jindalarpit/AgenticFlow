@@ -9,7 +9,7 @@ import { TaskResultPanel } from "../components/TaskResultPanel";
 import type { Daemon } from "../hooks/useDaemons";
 import type { Agent } from "../hooks/useAgents";
 import type { ManagedAgent } from "../hooks/useManagedAgents";
-import type { Task } from "../hooks/useTasks";
+import type { Task, CreateTaskInput } from "../hooks/useTasks";
 
 const TASKS_PER_PAGE = 50;
 
@@ -231,6 +231,9 @@ function TaskSubmissionForm({
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
+  const [deliverableType, setDeliverableType] = useState("");
+  const [gitRepoUrl, setGitRepoUrl] = useState("");
+  const [localDirectoryPath, setLocalDirectoryPath] = useState("");
   const createTask = useCreateTask();
 
   // Filter managed agents to show only those that are available for task delegation:
@@ -242,6 +245,14 @@ function TaskSubmissionForm({
 
   // Find the currently selected managed agent for confirmation display
   const selectedAgent = managedAgents.find((a) => a.id === selectedAgentId);
+
+  // Validation for execution workspace path
+  const pathError =
+    deliverableType === "execution" && localDirectoryPath.trim() && !localDirectoryPath.startsWith("/")
+      ? "Path must be absolute (start with /)"
+      : null;
+
+  const isSubmitDisabled = createTask.isPending || !!pathError;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -260,8 +271,20 @@ function TaskSubmissionForm({
       return;
     }
 
+    // Validate execution workspace config
+    if (deliverableType === "execution") {
+      if (!localDirectoryPath.trim()) {
+        setError("Local directory path is required for execution tasks.");
+        return;
+      }
+      if (!localDirectoryPath.startsWith("/")) {
+        setError("Local directory path must be an absolute path (start with /).");
+        return;
+      }
+    }
+
     // Build the task creation payload
-    const payload: { agent_type: string; prompt: string; agent_id?: string } = {
+    const payload: CreateTaskInput = {
       agent_type: agentType,
       prompt: prompt.trim(),
     };
@@ -275,12 +298,27 @@ function TaskSubmissionForm({
       }
     }
 
+    // Include conversational task fields when deliverable_type is selected
+    if (deliverableType) {
+      payload.deliverable_type = deliverableType;
+
+      if (deliverableType === "execution") {
+        payload.local_directory_path = localDirectoryPath.trim();
+        if (gitRepoUrl.trim()) {
+          payload.git_repo_url = gitRepoUrl.trim();
+        }
+      }
+    }
+
     createTask.mutate(payload, {
       onSuccess: (createdTask) => {
         setPrompt("");
         setSelectedAgentId("");
         setAgentType("");
         setError("");
+        setDeliverableType("");
+        setGitRepoUrl("");
+        setLocalDirectoryPath("");
         onTaskCreated?.(createdTask.id);
       },
       onError: (err: Error) => {
@@ -413,11 +451,102 @@ function TaskSubmissionForm({
           </p>
         </div>
 
+        {/* Deliverable Type Selector (Conversational Mode) */}
+        <div>
+          <label
+            htmlFor="deliverable-type"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Deliverable Type
+          </label>
+          <select
+            id="deliverable-type"
+            value={deliverableType}
+            onChange={(e) => setDeliverableType(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="">None (single-pass execution)</option>
+            <option value="plan">Plan</option>
+            <option value="design">Design</option>
+            <option value="tasks">Tasks</option>
+            <option value="execution">Execution</option>
+          </select>
+          <p className="text-xs text-gray-400 mt-1">
+            Select a deliverable type for conversational workflow, or leave as "None" for a single-pass task.
+          </p>
+        </div>
+
+        {/* Execution Workspace Config (shown when execution is selected) */}
+        {deliverableType === "execution" && (
+          <div className="space-y-3 rounded-md border border-gray-200 bg-gray-50 p-3">
+            <p className="text-sm font-medium text-gray-700">
+              Workspace Configuration
+            </p>
+
+            <div>
+              <label
+                htmlFor="git-repo-url"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Git Repository URL{" "}
+                <span className="text-xs text-gray-400 font-normal">(optional)</span>
+              </label>
+              <input
+                id="git-repo-url"
+                type="text"
+                value={gitRepoUrl}
+                onChange={(e) => setGitRepoUrl(e.target.value)}
+                placeholder="https://github.com/user/repo.git"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                If the local directory doesn't exist, the repo will be cloned there.
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor="local-directory-path"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Local Directory Path <span className="text-red-500">*</span>
+              </label>
+              <input
+                id="local-directory-path"
+                type="text"
+                value={localDirectoryPath}
+                onChange={(e) => setLocalDirectoryPath(e.target.value)}
+                placeholder="/home/user/projects/my-app"
+                className={`w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
+                  pathError
+                    ? "border-red-300 focus:border-red-300 focus:ring-red-100"
+                    : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                }`}
+                aria-required="true"
+                aria-invalid={!!pathError}
+                aria-describedby={pathError ? "local-dir-path-error" : undefined}
+              />
+              {pathError && (
+                <p
+                  id="local-dir-path-error"
+                  className="mt-1 text-xs text-red-600"
+                  role="alert"
+                >
+                  {pathError}
+                </p>
+              )}
+              <p className="text-xs text-gray-400 mt-1">
+                Absolute path where the agent will execute. Required for execution tasks.
+              </p>
+            </div>
+          </div>
+        )}
+
         {error && <p className="text-sm text-red-600">{error}</p>}
 
         <button
           type="submit"
-          disabled={createTask.isPending}
+          disabled={isSubmitDisabled}
           className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {createTask.isPending ? "Submitting..." : "Submit Task"}

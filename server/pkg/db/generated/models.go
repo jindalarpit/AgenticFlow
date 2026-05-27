@@ -62,6 +62,15 @@ type PersonalAccessToken struct {
 	TokenPrefix string             `json:"token_prefix"`
 }
 
+type PromptHistory struct {
+	ID          pgtype.UUID        `json:"id"`
+	TaskStageID pgtype.UUID        `json:"task_stage_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	PromptText  string             `json:"prompt_text"`
+	OutputText  pgtype.Text        `json:"output_text"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Task struct {
 	ID             pgtype.UUID        `json:"id"`
 	UserID         pgtype.UUID        `json:"user_id"`
@@ -78,6 +87,10 @@ type Task struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 	AgentID        pgtype.UUID        `json:"agent_id"`
+	Deliverables   []byte             `json:"deliverables"`
+	WorkspaceMode  string             `json:"workspace_mode"`
+	WorkspacePath  pgtype.Text        `json:"workspace_path"`
+	GitRepoUrl     pgtype.Text        `json:"git_repo_url"`
 }
 
 type TaskMessage struct {
@@ -86,11 +99,26 @@ type TaskMessage struct {
 	Sequence  int32              `json:"sequence"`
 	Stream    pgtype.Text        `json:"stream"`
 	Content   pgtype.Text        `json:"content"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	Type      string             `json:"type"`
 	Tool      pgtype.Text        `json:"tool"`
 	Input     []byte             `json:"input"`
 	Output    pgtype.Text        `json:"output"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type TaskStage struct {
+	ID            pgtype.UUID        `json:"id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	StageName     string             `json:"stage_name"`
+	StageOrder    int32              `json:"stage_order"`
+	Status        string             `json:"status"`
+	OutputContent pgtype.Text        `json:"output_content"`
+	Feedback      pgtype.Text        `json:"feedback"`
+	StartedAt     pgtype.Timestamptz `json:"started_at"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	SessionID     pgtype.Text        `json:"session_id"`
+	WorkDir       pgtype.Text        `json:"work_dir"`
 }
 
 type User struct {

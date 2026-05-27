@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { useTask, useTaskMessages, useCancelTask } from "../hooks/useTasks";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { useTask, useTaskMessages, useCancelTask, useCreateTask } from "../hooks/useTasks";
 import { useTaskStream } from "../hooks/useTaskStream";
 import { useTimeline } from "../hooks/useTimeline";
 import { useSessionState } from "../hooks/useSessionState";
+import { useTaskStages } from "../hooks/useTaskStages";
 import { useQueryClient } from "@tanstack/react-query";
 import { wsClient, type WSEvent } from "../lib/ws";
 import { TaskInput } from "../components/TaskInput";
@@ -17,6 +18,15 @@ import {
   CopyButton,
   MetadataChips,
 } from "../components/task-timeline";
+import { StageProgressIndicator } from "../components/task/StageProgressIndicator";
+import { StageApprovalPanel } from "../components/task/StageApprovalPanel";
+import { StageOutputViewer } from "../components/task/StageOutputViewer";
+import { ConversationThread } from "../components/task/ConversationThread";
+import { DeliverablePanel } from "../components/task/DeliverablePanel";
+import { FollowUpInput, type StageStatus } from "../components/task/FollowUpInput";
+import { WorkflowOrchestrator } from "../components/task/WorkflowOrchestrator";
+import { DeliverableNav, type DeliverableInfo } from "../components/task/DeliverableNav";
+import type { Deliverable } from "../components/task/DeliverableSelector";
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
@@ -56,19 +66,33 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
+/** Valid deliverable types for conversational tasks. */
+const VALID_DELIVERABLE_TYPES = new Set(["plan", "design", "tasks", "execution"]);
+
 export default function TaskDetail() {
   const { id } = useParams<{ id: string }>();
   const taskId = id ?? "";
+  const navigate = useNavigate();
 
   const { data: task, isLoading: taskLoading, error: taskError } = useTask(taskId);
   const { data: initialMessages } = useTaskMessages(taskId);
   const { messages, seedMessages } = useTaskStream(taskId);
+  const { data: stages } = useTaskStages(taskId);
   const cancelTask = useCancelTask();
+  const createTask = useCreateTask();
   const queryClient = useQueryClient();
   const sessionState = useSessionState(taskId);
 
   // View mode state: "structured" (default) or "raw"
   const [viewMode, setViewMode] = useState<"structured" | "raw">("structured");
+
+  // Conversational task state: active deliverable tab
+  const [activeDeliverable, setActiveDeliverable] = useState<string | null>(null);
+
+  // Reset active deliverable when navigating to a different task
+  useEffect(() => {
+    setActiveDeliverable(null);
+  }, [taskId]);
 
   // Wire useTimeline hook with messages from useTaskStream
   const {
@@ -174,6 +198,147 @@ export default function TaskDetail() {
   const isRunning = task.status === "running";
   const isTerminal = ["completed", "failed", "cancelled", "timeout"].includes(task.status);
 
+  // Stage UI: only show when the task has stages (backward compat for single-pass tasks)
+  const hasStages = Array.isArray(stages) && stages.length > 0;
+
+  // Detect conversational task: has stages where stage name is a valid deliverable type
+  const isConversationalTask = hasStages
+    ? stages.some((s) => VALID_DELIVERABLE_TYPES.has(s.name))
+    : false;
+
+  // For legacy approval-gate tasks (non-conversational staged tasks)
+  const awaitingStage = hasStages && !isConversationalTask
+    ? stages.find((s) => s.status === "awaiting_approval")
+    : undefined;
+  // Stages whose output should be visible (awaiting_approval, completed, approved)
+  const visibleOutputStages = hasStages && !isConversationalTask
+    ? stages.filter(
+        (s) =>
+          s.status === "awaiting_approval" ||
+          s.status === "completed" ||
+          s.status === "approved"
+      )
+    : [];
+
+  // Conversational task: derive deliverable info for DeliverableNav
+  const deliverableInfos: DeliverableInfo[] = isConversationalTask && stages
+    ? stages
+        .filter((s) => VALID_DELIVERABLE_TYPES.has(s.name))
+        .map((s) => ({
+          type: s.name,
+          status: s.status === "completed" ? "completed"
+            : s.status === "running" ? "running"
+            : "pending" as DeliverableInfo["status"],
+        }))
+    : [];
+
+  // Set initial active deliverable when stages load
+  useEffect(() => {
+    if (!isConversationalTask || !stages || stages.length === 0) return;
+    if (activeDeliverable) return; // Already set
+
+    // Default to the first non-completed stage, or the last stage if all completed
+    const validStages = stages.filter((s) => VALID_DELIVERABLE_TYPES.has(s.name));
+    const activeStage = validStages.find((s) => s.status === "running")
+      ?? validStages.find((s) => s.status === "pending")
+      ?? validStages[validStages.length - 1];
+    if (activeStage) {
+      setActiveDeliverable(activeStage.name);
+    }
+  }, [isConversationalTask, stages, activeDeliverable]);
+
+  // Get the active stage data for the conversational UI
+  const activeStageData = isConversationalTask && activeDeliverable && stages
+    ? stages.find((s) => s.name === activeDeliverable)
+    : null;
+
+  // Build completed deliverables map for WorkflowOrchestrator
+  const completedDeliverables: Record<string, string> = {};
+  if (isConversationalTask && stages) {
+    for (const s of stages) {
+      if (s.status === "completed" && s.output_content) {
+        completedDeliverables[s.name] = s.output_content;
+      }
+    }
+  }
+
+  // Handle creating a new task for the next deliverable (WorkflowOrchestrator callback)
+  const handleCreateNextDeliverable = useCallback(
+    (deliverableType: Deliverable, priorContext: string[]) => {
+      if (!task) return;
+      createTask.mutate(
+        {
+          agent_type: task.agent_type,
+          prompt: task.prompt,
+          agent_id: task.agent_id ?? undefined,
+          deliverable_type: deliverableType,
+          prior_context: priorContext,
+        },
+        {
+          onSuccess: (newTask) => {
+            // Navigate to the newly created task
+            navigate(`/tasks/${newTask.id}`);
+          },
+        }
+      );
+    },
+    [task, createTask, navigate]
+  );
+
+  // Handle follow-up sent: refresh stages and history
+  const handleFollowUpSent = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["tasks", taskId, "stages"] });
+    void queryClient.invalidateQueries({ queryKey: ["tasks", taskId] });
+  }, [queryClient, taskId]);
+
+  // Subscribe to WebSocket events for conversational task real-time updates
+  useEffect(() => {
+    if (!taskId || !isConversationalTask) return;
+
+    const unsub1 = wsClient.on("task_output", (event: WSEvent) => {
+      const payload = event.payload as { task_id?: string };
+      if (payload.task_id === taskId) {
+        // task_output events are handled by useTaskStream for raw output
+        // For conversational tasks, we also refresh stages to update status
+        void queryClient.invalidateQueries({ queryKey: ["tasks", taskId, "stages"] });
+      }
+    });
+
+    const unsub2 = wsClient.on("task_completed", (event: WSEvent) => {
+      const payload = event.payload as { task_id?: string; deliverable_type?: string };
+      if (payload.task_id === taskId) {
+        void queryClient.invalidateQueries({ queryKey: ["tasks", taskId, "stages"] });
+        // Refresh history for the active deliverable
+        if (activeDeliverable) {
+          void queryClient.invalidateQueries({
+            queryKey: ["tasks", taskId, "stages", activeDeliverable, "history"],
+          });
+        }
+      }
+    });
+
+    const unsub3 = wsClient.on("task_failed", (event: WSEvent) => {
+      const payload = event.payload as { task_id?: string };
+      if (payload.task_id === taskId) {
+        void queryClient.invalidateQueries({ queryKey: ["tasks", taskId, "stages"] });
+      }
+    });
+
+    const unsub4 = wsClient.on("task_started", (event: WSEvent) => {
+      const payload = event.payload as { task_id?: string };
+      if (payload.task_id === taskId) {
+        void queryClient.invalidateQueries({ queryKey: ["tasks", taskId, "stages"] });
+      }
+    });
+
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+      unsub4();
+    };
+  }, [taskId, isConversationalTask, activeDeliverable, queryClient]);
+
   // Prepare copy text from filtered items
   const copyText = formatCopyText(filteredItems);
 
@@ -267,6 +432,103 @@ export default function TaskDetail() {
             <p className="whitespace-pre-wrap text-sm text-gray-800">{task.prompt}</p>
           </div>
         </details>
+
+        {/* Conversational Task UI — shown for tasks with deliverable_type */}
+        {isConversationalTask && activeDeliverable && (
+          <div className="mt-4 space-y-4">
+            {/* Deliverable Navigation Tabs */}
+            <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+              <DeliverableNav
+                deliverables={deliverableInfos}
+                activeType={activeDeliverable}
+                onSelect={setActiveDeliverable}
+              />
+            </div>
+
+            {/* Conversation Thread — chat history for the active deliverable */}
+            <div className="rounded-lg border border-gray-200 bg-white">
+              <div className="border-b border-gray-100 px-4 py-2">
+                <h3 className="text-sm font-medium text-gray-700">Conversation</h3>
+              </div>
+              <ConversationThread taskId={taskId} stageName={activeDeliverable} />
+            </div>
+
+            {/* Deliverable Panel — current output as markdown */}
+            {activeStageData && (
+              <DeliverablePanel
+                outputContent={activeStageData.output_content}
+                status={activeStageData.status}
+              />
+            )}
+
+            {/* Follow-Up Input — send refinement messages */}
+            {activeStageData && (
+              <FollowUpInput
+                taskId={taskId}
+                stageName={activeDeliverable}
+                stageStatus={activeStageData.status as StageStatus}
+                onFollowUpSent={handleFollowUpSent}
+              />
+            )}
+
+            {/* Workflow Orchestrator — proceed/skip controls */}
+            {activeStageData?.status === "completed" && task.agent_id && (
+              <WorkflowOrchestrator
+                agentId={task.agent_id}
+                currentDeliverableType={activeDeliverable as Deliverable}
+                completedDeliverables={completedDeliverables}
+                onCreateTask={handleCreateNextDeliverable}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Legacy Stage Progress & Approval UI — only shown for non-conversational staged tasks */}
+        {hasStages && !isConversationalTask && (
+          <div className="mt-4 space-y-4">
+            {/* Stage Progress Indicator */}
+            <div className="rounded-lg border border-gray-200 bg-white p-4">
+              <StageProgressIndicator
+                stages={stages.map((s) => ({ name: s.name, status: s.status }))}
+              />
+            </div>
+
+            {/* Stage Output Viewers for completed/awaiting stages */}
+            {visibleOutputStages.map((stage) => (
+              <StageOutputViewer
+                key={stage.name}
+                stageName={stage.name}
+                status={stage.status}
+                outputContent={stage.output_content}
+              />
+            ))}
+
+            {/* Approval Panel for the stage awaiting approval */}
+            {awaitingStage && (
+              <StageApprovalPanel
+                taskId={taskId}
+                stageName={awaitingStage.name}
+                status={awaitingStage.status}
+                onApprove={() => {
+                  void queryClient.invalidateQueries({
+                    queryKey: ["tasks", taskId, "stages"],
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: ["tasks", taskId],
+                  });
+                }}
+                onReject={() => {
+                  void queryClient.invalidateQueries({
+                    queryKey: ["tasks", taskId, "stages"],
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: ["tasks", taskId],
+                  });
+                }}
+              />
+            )}
+          </div>
+        )}
 
         {/* Error message */}
         {task.error_message && isTerminal && (

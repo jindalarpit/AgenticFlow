@@ -59,9 +59,12 @@ type DaemonHeartbeatReq struct {
 }
 
 // TaskCompleteReq is the request body for POST /api/daemon/tasks/{taskId}/complete.
+// Extended with session_id and work_dir for conversational task completion.
 type TaskCompleteReq struct {
-	Output   string `json:"output"`
-	ExitCode int32  `json:"exit_code"`
+	Output    string `json:"output"`
+	ExitCode  int32  `json:"exit_code"`
+	SessionID string `json:"session_id,omitempty"`
+	WorkDir   string `json:"work_dir,omitempty"`
 }
 
 // TaskFailReq is the request body for POST /api/daemon/tasks/{taskId}/fail.
@@ -340,6 +343,19 @@ func (h *DaemonHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 // It claims a pending task matching the daemon's runtimes, enforcing per-agent
 // concurrency limits via ClaimPendingTaskForRuntime. Each agent's
 // max_concurrent_tasks is checked independently at the SQL level.
+//
+// For staged tasks (those with task_stage rows), the response includes:
+//   - current_stage: the lowest-order pending stage (name, order, status)
+//   - prior_stages: completed/approved stage outputs (name, order, status, output_content)
+//
+// For all tasks (staged and single-pass), the response includes:
+//   - workspace_mode: the task's workspace mode ("isolated" or "existing")
+//   - workspace_path: the task's workspace path (if set)
+//
+// For single-pass tasks (no stages), current_stage and prior_stages are omitted
+// for backward compatibility.
+//
+// Only tasks where the next stage is "pending" are eligible for claiming.
 func (h *DaemonHandler) PollTasks(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.DaemonUserIDFromContext(r.Context())
 	if userID == "" {
@@ -383,18 +399,39 @@ func (h *DaemonHandler) PollTasks(w http.ResponseWriter, r *http.Request) {
 	// query enforces per-agent concurrency: it skips agents whose active running
 	// task count equals their max_concurrent_tasks, and resumes assignment when
 	// the count drops below the limit. Each agent's limit is enforced independently.
+	//
+	// We first try ClaimPendingTaskWithStage (for staged tasks with a pending next
+	// stage), then fall back to ClaimPendingTaskForRuntime (for single-pass tasks).
 	var task db.Task
 	var claimed bool
+	var isStagedTask bool
+
+	// First pass: try to claim a staged task with a pending stage.
 	for _, rt := range runtimes {
-		task, err = h.Queries.ClaimPendingTaskForRuntime(r.Context(), db.ClaimPendingTaskForRuntimeParams{
-			RuntimeID: rt.ID,
-			DaemonID:  daemon.ID,
+		task, err = h.Queries.ClaimPendingTaskWithStage(r.Context(), db.ClaimPendingTaskWithStageParams{
+			DaemonID:       daemon.ID,
+			AgentRuntimeID: rt.ID,
 		})
 		if err == nil {
 			claimed = true
+			isStagedTask = true
 			break
 		}
-		// pgx.ErrNoRows means no eligible pending task for this runtime — try next.
+	}
+
+	// Second pass: try to claim a single-pass task (no stages).
+	if !claimed {
+		for _, rt := range runtimes {
+			task, err = h.Queries.ClaimPendingTaskForRuntime(r.Context(), db.ClaimPendingTaskForRuntimeParams{
+				RuntimeID: rt.ID,
+				DaemonID:  daemon.ID,
+			})
+			if err == nil {
+				claimed = true
+				break
+			}
+			// pgx.ErrNoRows means no eligible pending task for this runtime — try next.
+		}
 	}
 
 	if !claimed {
@@ -410,6 +447,17 @@ func (h *DaemonHandler) PollTasks(w http.ResponseWriter, r *http.Request) {
 		"agent_type": task.AgentType,
 		"prompt":     task.Prompt,
 		"status":     task.Status,
+	}
+
+	// Always include workspace_mode and workspace_path for all tasks.
+	response["workspace_mode"] = task.WorkspaceMode
+	if task.WorkspacePath.Valid && task.WorkspacePath.String != "" {
+		response["workspace_path"] = task.WorkspacePath.String
+	}
+
+	// For staged tasks, include current_stage and prior_stages.
+	if isStagedTask {
+		h.enrichPollResponseWithStages(r, response, task)
 	}
 
 	if task.AgentID.Valid {
@@ -448,6 +496,123 @@ func (h *DaemonHandler) PollTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// enrichPollResponseWithStages adds stage-specific fields to the poll response
+// for tasks that have workflow stages. It detects whether the task is a
+// conversational task (stage_name is a valid deliverable type) and branches:
+//
+// For conversational tasks:
+//   - deliverable_type: the stage_name (plan, design, tasks, execution)
+//   - prior_session_id: from the task's deliverables JSON (if follow-up)
+//   - prior_context: from the task's deliverables JSON (if first message)
+//   - workspace_config: {git_repo_url, local_directory_path} for execution type
+//   - prior_work_dir: from the task_stage (if available from prior execution)
+//
+// For legacy staged tasks:
+//   - current_stage: {name, order, status} of the lowest-order pending stage
+//   - prior_stages: [{name, order, status, output_content}] of completed/approved stages
+func (h *DaemonHandler) enrichPollResponseWithStages(r *http.Request, response map[string]interface{}, task db.Task) {
+	ctx := r.Context()
+
+	// Get the next pending stage (lowest order).
+	nextStage, err := h.Queries.GetNextPendingStage(ctx, task.ID)
+	if err != nil {
+		slog.Warn("poll tasks: failed to get next pending stage",
+			"task_id", uuidToString(task.ID),
+			"error", err,
+		)
+		return
+	}
+
+	// Check if this is a conversational task by examining the stage_name.
+	if ValidDeliverableTypes[nextStage.StageName] {
+		h.enrichPollResponseForConversationalTask(response, task, nextStage)
+		return
+	}
+
+	// Legacy staged task: get completed/approved prior stages for context.
+	completedStages, err := h.Queries.GetCompletedStagesForTask(ctx, task.ID)
+	if err != nil {
+		slog.Warn("poll tasks: failed to get completed stages",
+			"task_id", uuidToString(task.ID),
+			"error", err,
+		)
+		// Non-fatal: continue without prior stages.
+		completedStages = nil
+	}
+
+	// Use the extracted pure functions for response construction.
+	enrichResponseWithStageFields(response, nextStage, completedStages)
+}
+
+// enrichPollResponseForConversationalTask adds conversational task fields to
+// the poll response. This is called when the claimed task has a stage_name
+// that is a valid deliverable type (plan, design, tasks, execution).
+//
+// The deliverables column stores either:
+//   - A JSON array of strings (prior_context for first messages)
+//   - A JSON object with "prior_session_id" and optionally "prior_work_dir" (for follow-ups)
+func (h *DaemonHandler) enrichPollResponseForConversationalTask(response map[string]interface{}, task db.Task, stage db.TaskStage) {
+	// Always include deliverable_type.
+	response["deliverable_type"] = stage.StageName
+
+	// Parse the deliverables column to extract prior_session_id or prior_context.
+	if len(task.Deliverables) > 0 {
+		h.parseConversationalDeliverables(response, task.Deliverables)
+	}
+
+	// Include workspace_config for execution-type tasks.
+	if stage.StageName == "execution" {
+		wsConfig := map[string]interface{}{
+			"local_directory_path": "",
+		}
+		if task.WorkspacePath.Valid && task.WorkspacePath.String != "" {
+			wsConfig["local_directory_path"] = task.WorkspacePath.String
+		}
+		if task.GitRepoUrl.Valid && task.GitRepoUrl.String != "" {
+			wsConfig["git_repo_url"] = task.GitRepoUrl.String
+		}
+		response["workspace_config"] = wsConfig
+	}
+
+	// Include prior_work_dir from the task_stage if available.
+	if stage.WorkDir.Valid && stage.WorkDir.String != "" {
+		response["prior_work_dir"] = stage.WorkDir.String
+	}
+}
+
+// parseConversationalDeliverables parses the task's deliverables JSON and adds
+// the appropriate fields to the poll response.
+//
+// Two formats are supported:
+//   - JSON array of strings → prior_context (first message with context from prior deliverables)
+//   - JSON object with "prior_session_id" → prior_session_id (follow-up message)
+func (h *DaemonHandler) parseConversationalDeliverables(response map[string]interface{}, deliverables []byte) {
+	// Try parsing as a JSON array first (prior_context).
+	var priorContext []string
+	if err := json.Unmarshal(deliverables, &priorContext); err == nil {
+		// Successfully parsed as array. Only include if non-empty.
+		if len(priorContext) > 0 {
+			response["prior_context"] = priorContext
+		}
+		return
+	}
+
+	// Try parsing as a JSON object (follow-up with prior_session_id).
+	var obj map[string]interface{}
+	if err := json.Unmarshal(deliverables, &obj); err == nil {
+		if sessionID, ok := obj["prior_session_id"].(string); ok && sessionID != "" {
+			response["prior_session_id"] = sessionID
+		}
+		// prior_work_dir from deliverables (in case stage doesn't have it yet).
+		if workDir, ok := obj["prior_work_dir"].(string); ok && workDir != "" {
+			// Only set if not already set from the stage.
+			if _, exists := response["prior_work_dir"]; !exists {
+				response["prior_work_dir"] = workDir
+			}
+		}
+	}
 }
 
 // StartTask handles POST /api/daemon/tasks/{taskId}/start.
@@ -507,15 +672,33 @@ func (h *DaemonHandler) StartTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Broadcast task_started event via WebSocket.
-	if h.Hub != nil {
-		h.Hub.Broadcast(realtime.Event{
-			Type: "task_started",
-			Payload: map[string]interface{}{
-				"task_id":   taskID,
-				"daemon_id": daemonIDStr,
-			},
+	// For staged tasks, transition the next pending stage to "running" and
+	// broadcast stage_started. This is a best-effort operation — if it fails,
+	// the task start itself still succeeds.
+	var deliverableTypeForEvent string
+	nextStage, err := h.Queries.GetNextPendingStage(r.Context(), taskUUID)
+	if err == nil {
+		// Update stage status to running.
+		_ = h.Queries.UpdateStageStatus(r.Context(), db.UpdateStageStatusParams{
+			ID:     nextStage.ID,
+			Status: "running",
 		})
+
+		// Determine if this is a conversational task (stage_name is a valid deliverable type).
+		if ValidDeliverableTypes[nextStage.StageName] {
+			deliverableTypeForEvent = nextStage.StageName
+		} else {
+			// Non-conversational staged task: broadcast stage_started event.
+			if h.Hub != nil {
+				h.Hub.BroadcastStageStarted(taskID, nextStage.StageName)
+			}
+		}
+	}
+
+	// Broadcast task_started event via WebSocket.
+	// For conversational tasks, include the deliverable_type.
+	if h.Hub != nil {
+		h.Hub.BroadcastTaskStarted(taskID, daemonIDStr, deliverableTypeForEvent)
 	}
 
 	// Trigger agent status recomputation for the task's owning agent.
@@ -529,6 +712,14 @@ func (h *DaemonHandler) StartTask(w http.ResponseWriter, r *http.Request) {
 
 // CompleteTask handles POST /api/daemon/tasks/{taskId}/complete.
 // It marks the task as completed with output and exit code.
+//
+// For conversational tasks (those with a task_stage whose stage_name is a valid
+// deliverable type), this handler additionally:
+//   - Updates the task_stage with session_id, work_dir, output_content, status=completed
+//   - Inserts a prompt_history entry with the task's prompt and the output
+//   - Broadcasts task_completed with deliverable_type and output_content
+//
+// For non-conversational tasks, the existing completion flow is preserved.
 func (h *DaemonHandler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 	if taskID == "" {
@@ -569,15 +760,24 @@ func (h *DaemonHandler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		h.SessionStateManager.ClearState(taskID)
 	}
 
+	// Check if this is a conversational task by looking for a running stage
+	// with a valid deliverable type. If found, perform conversational completion.
+	var deliverableType string
+	stages, stagesErr := h.Queries.ListStagesForTask(r.Context(), taskUUID)
+	if stagesErr == nil && len(stages) > 0 {
+		for _, stage := range stages {
+			if stage.Status == "running" && ValidDeliverableTypes[stage.StageName] {
+				deliverableType = stage.StageName
+				h.completeConversationalStage(r, taskUUID, stage, req)
+				break
+			}
+		}
+	}
+
 	// Broadcast task_completed event via WebSocket.
+	// For conversational tasks, includes deliverable_type and output_content.
 	if h.Hub != nil {
-		h.Hub.Broadcast(realtime.Event{
-			Type: "task_completed",
-			Payload: map[string]interface{}{
-				"task_id":   taskID,
-				"exit_code": req.ExitCode,
-			},
-		})
+		h.Hub.BroadcastTaskCompleted(taskID, req.ExitCode, deliverableType, req.Output)
 	}
 
 	// Trigger agent status recomputation for the task's owning agent.
@@ -587,6 +787,55 @@ func (h *DaemonHandler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})
+}
+
+// completeConversationalStage handles the conversational-specific completion
+// logic: updating the task_stage with session_id, work_dir, and output_content,
+// and inserting a prompt_history entry.
+func (h *DaemonHandler) completeConversationalStage(r *http.Request, taskUUID pgtype.UUID, stage db.TaskStage, req TaskCompleteReq) {
+	ctx := r.Context()
+
+	// Update the task_stage with completion data.
+	if err := h.Queries.UpdateStageCompletion(ctx, db.UpdateStageCompletionParams{
+		ID:            stage.ID,
+		OutputContent: pgtype.Text{String: req.Output, Valid: req.Output != ""},
+		SessionID:     pgtype.Text{String: req.SessionID, Valid: req.SessionID != ""},
+		WorkDir:       pgtype.Text{String: req.WorkDir, Valid: req.WorkDir != ""},
+	}); err != nil {
+		slog.Error("complete task: update stage completion failed",
+			"task_id", uuidToString(taskUUID),
+			"stage_id", uuidToString(stage.ID),
+			"error", err,
+		)
+		// Non-fatal: the task itself is already marked completed.
+		return
+	}
+
+	// Look up the task to get the prompt text for the history entry.
+	task, err := h.Queries.GetTaskByID(ctx, taskUUID)
+	if err != nil {
+		slog.Error("complete task: failed to get task for prompt history",
+			"task_id", uuidToString(taskUUID),
+			"error", err,
+		)
+		return
+	}
+
+	// Insert a prompt_history entry recording this turn.
+	_, err = h.Queries.CreatePromptHistoryEntry(ctx, db.CreatePromptHistoryEntryParams{
+		TaskStageID: stage.ID,
+		TaskID:      taskUUID,
+		PromptText:  task.Prompt,
+		OutputText:  pgtype.Text{String: req.Output, Valid: req.Output != ""},
+	})
+	if err != nil {
+		slog.Error("complete task: failed to create prompt history entry",
+			"task_id", uuidToString(taskUUID),
+			"stage_id", uuidToString(stage.ID),
+			"error", err,
+		)
+		// Non-fatal: the stage completion itself succeeded.
+	}
 }
 
 // FailTask handles POST /api/daemon/tasks/{taskId}/fail.
@@ -625,16 +874,27 @@ func (h *DaemonHandler) FailTask(w http.ResponseWriter, r *http.Request) {
 		h.SessionStateManager.ClearState(taskID)
 	}
 
+	// Determine deliverable_type for conversational tasks.
+	var deliverableType string
+	stages, stagesErr := h.Queries.ListStagesForTask(r.Context(), taskUUID)
+	if stagesErr == nil && len(stages) > 0 {
+		deliverableType = parseDeliverableTypeFromStages(stages)
+		// For conversational tasks with a running stage, mark it as failed.
+		for _, stage := range stages {
+			if stage.Status == "running" && ValidDeliverableTypes[stage.StageName] {
+				_ = h.Queries.UpdateStageStatus(r.Context(), db.UpdateStageStatusParams{
+					ID:     stage.ID,
+					Status: "failed",
+				})
+				break
+			}
+		}
+	}
+
 	// Broadcast task_failed event via WebSocket.
+	// For conversational tasks, includes deliverable_type.
 	if h.Hub != nil {
-		h.Hub.Broadcast(realtime.Event{
-			Type: "task_failed",
-			Payload: map[string]interface{}{
-				"task_id":       taskID,
-				"exit_code":     req.ExitCode,
-				"error_message": req.ErrorMessage,
-			},
-		})
+		h.Hub.BroadcastTaskFailed(taskID, req.ExitCode, req.ErrorMessage, deliverableType)
 	}
 
 	// Trigger agent status recomputation for the task's owning agent.
@@ -831,6 +1091,101 @@ func (h *DaemonHandler) ReportInputState(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/daemon/tasks/{taskId}/stages/{stageName}/complete
+// ---------------------------------------------------------------------------
+
+// StageCompleteReq is the request body for POST /api/daemon/tasks/{taskId}/stages/{stageName}/complete.
+type StageCompleteReq struct {
+	OutputContent string `json:"output_content"`
+}
+
+// CompleteStage handles POST /api/daemon/tasks/{taskId}/stages/{stageName}/complete.
+// It marks a stage as awaiting_approval with the provided output content.
+// For conversational tasks (stage_name is a valid deliverable type), this endpoint
+// returns 409 — conversational tasks complete via POST /api/daemon/tasks/{id}/complete.
+func (h *DaemonHandler) CompleteStage(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+	if taskID == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "taskId is required")
+		return
+	}
+
+	stageName := chi.URLParam(r, "stageName")
+	if stageName == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "stageName is required")
+		return
+	}
+
+	taskUUID, err := parseUUID(taskID)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+
+	var req StageCompleteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Guard: conversational tasks do not use the stage completion endpoint.
+	// They complete via POST /api/daemon/tasks/{id}/complete which handles
+	// session_id, work_dir, and prompt_history.
+	if ValidDeliverableTypes[stageName] {
+		writeErrorJSON(w, http.StatusConflict, "conversational tasks complete via task completion endpoint")
+		return
+	}
+
+	// Look up the stage by task_id and stage_name.
+	stage, err := h.Queries.GetStageByTaskAndName(r.Context(), db.GetStageByTaskAndNameParams{
+		TaskID:    taskUUID,
+		StageName: stageName,
+	})
+	if err != nil {
+		slog.Warn("complete stage: stage not found",
+			"task_id", taskID, "stage_name", stageName, "error", err)
+		writeErrorJSON(w, http.StatusNotFound, "stage not found")
+		return
+	}
+
+	// Verify stage is in "running" status.
+	if stage.Status != "running" {
+		writeErrorJSON(w, http.StatusConflict, "stage is not in running status")
+		return
+	}
+
+	// Update stage status to "awaiting_approval".
+	if err := h.Queries.UpdateStageStatus(r.Context(), db.UpdateStageStatusParams{
+		ID:     stage.ID,
+		Status: "awaiting_approval",
+	}); err != nil {
+		slog.Error("complete stage: update status failed",
+			"task_id", taskID, "stage_name", stageName, "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to update stage status")
+		return
+	}
+
+	// Store the output content.
+	if err := h.Queries.UpdateStageOutput(r.Context(), db.UpdateStageOutputParams{
+		ID:            stage.ID,
+		OutputContent: pgtype.Text{String: req.OutputContent, Valid: req.OutputContent != ""},
+	}); err != nil {
+		slog.Error("complete stage: update output failed",
+			"task_id", taskID, "stage_name", stageName, "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "failed to store stage output")
+		return
+	}
+
+	// Broadcast stage_awaiting_approval WebSocket event.
+	// This is only reached for non-conversational (approval-gate) tasks.
+	if h.Hub != nil {
+		h.Hub.BroadcastStageAwaitingApproval(taskID, stageName, req.OutputContent)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "awaiting_approval"})
 }
 
 // ---------------------------------------------------------------------------

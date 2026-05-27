@@ -105,6 +105,10 @@ vi.mock("../../hooks/useTasks", () => ({
     mutate: vi.fn(),
     isPending: false,
   }),
+  useCreateTask: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
 }));
 
 vi.mock("../../hooks/useTaskStream", () => ({
@@ -141,6 +145,14 @@ vi.mock("../../hooks/useTimeline", () => ({
 
 vi.mock("../../hooks/useSessionState", () => ({
   useSessionState: () => null,
+}));
+
+vi.mock("../../hooks/useTaskStages", () => ({
+  useTaskStages: () => ({
+    data: undefined,
+    isLoading: false,
+    error: null,
+  }),
 }));
 
 vi.mock("../../hooks/useTaskInput", () => ({

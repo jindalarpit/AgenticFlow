@@ -107,6 +107,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Post("/tasks/{taskId}/fail", daemonH.FailTask)
 		r.Post("/tasks/{taskId}/messages", daemonH.ReportTaskMessages)
 		r.Post("/tasks/{taskId}/input-state", daemonH.ReportInputState)
+		r.Post("/tasks/{taskId}/stages/{stageName}/complete", daemonH.CompleteStage)
 	})
 
 	// Protected API routes (require user PAT auth).
@@ -147,8 +148,13 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Get("/api/tasks", userH.ListTasks)
 		r.Get("/api/tasks/{taskId}", userH.GetTask)
 		r.Get("/api/tasks/{taskId}/messages", userH.ListTaskMessages)
+		r.Get("/api/tasks/{taskId}/stages", userH.ListStages)
 		r.Post("/api/tasks/{taskId}/cancel", userH.CancelTask)
 		r.Post("/api/tasks/{id}/input", userH.SendTaskInput)
+		r.Post("/api/tasks/{taskId}/stages/{stageName}/approve", userH.ApproveStage)
+		r.Post("/api/tasks/{taskId}/stages/{stageName}/reject", userH.RejectStage)
+		r.Post("/api/tasks/{taskId}/stages/{stageName}/follow-up", userH.FollowUpStage)
+		r.Get("/api/tasks/{taskId}/stages/{stageName}/history", userH.GetStageHistory)
 
 		// Custom Agents.
 		r.Post("/api/custom-agents", userH.CreateCustomAgent)

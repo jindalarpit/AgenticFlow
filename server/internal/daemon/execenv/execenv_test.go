@@ -58,7 +58,7 @@ func TestNewExecEnv_Success(t *testing.T) {
 }
 
 func TestNewExecEnv_MissingWorkspacesRoot(t *testing.T) {
-	task := Task{ID: "task-123", AgentType: "claude"}
+	task := Task{ID: "task-123", AgentType: "claude", WorkspaceMode: WorkspaceModeIsolated}
 	cfg := Config{WorkspacesRoot: ""}
 
 	_, err := NewExecEnv(task, cfg, "/usr/bin/claude", testLogger())

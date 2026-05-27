@@ -16,16 +16,28 @@ import (
 	"time"
 )
 
+// WorkspaceMode defines how the execution workspace is determined.
+type WorkspaceMode string
+
+const (
+	// WorkspaceModeIsolated creates a new directory under ~/.agenticflow/workspaces/<task-id>/.
+	WorkspaceModeIsolated WorkspaceMode = "isolated"
+	// WorkspaceModeExisting uses a user-specified existing directory as-is.
+	WorkspaceModeExisting WorkspaceMode = "existing"
+)
+
 // Task represents the minimal task information needed to set up an execution
 // environment. This mirrors the design's Task type from internal/daemon/types.go.
 type Task struct {
-	ID           string
-	AgentType    string
-	Prompt       string
-	Model        string
-	ArgsTemplate string
-	EnvVars      map[string]string
-	CustomArgs   []string // Agent-level custom arguments appended after provider args.
+	ID            string
+	AgentType     string
+	Prompt        string
+	Model         string
+	ArgsTemplate  string
+	EnvVars       map[string]string
+	CustomArgs    []string      // Agent-level custom arguments appended after provider args.
+	WorkspaceMode WorkspaceMode // "isolated" (default) or "existing"
+	WorkspacePath string        // Required when WorkspaceMode is "existing"
 }
 
 // Config holds the daemon configuration fields relevant to execution environments.
@@ -37,25 +49,25 @@ type Config struct {
 // ExecEnv represents an isolated execution environment for a single task.
 // It manages workspace creation, agent process spawning, and cleanup.
 type ExecEnv struct {
-	TaskID       string
-	WorkspaceDir string
-	Provider     string
-	Prompt       string
-	Model        string
-	EnvVars      map[string]string
-	ArgsTemplate string
-	CustomArgs   []string // Agent-level custom arguments appended after provider args.
-	SystemPrompt string   // Runtime_Brief for providers that support system prompt flags.
-	BinaryPath   string
-	Logger       *slog.Logger
+	TaskID        string
+	WorkspaceDir  string
+	Provider      string
+	Prompt        string
+	Model         string
+	EnvVars       map[string]string
+	ArgsTemplate  string
+	CustomArgs    []string      // Agent-level custom arguments appended after provider args.
+	SystemPrompt  string        // Runtime_Brief for providers that support system prompt flags.
+	BinaryPath    string
+	WorkspaceMode WorkspaceMode // "isolated" or "existing"
+	Logger        *slog.Logger
 }
 
 // NewExecEnv creates an ExecEnv from a task and daemon config.
-// It resolves the workspace directory to cfg.WorkspacesRoot/<task-id>/.
+// For "isolated" mode (default): resolves workspace to cfg.WorkspacesRoot/<task-id>/.
+// For "existing" mode: validates the user-specified path exists, is a directory,
+// and is writable, then uses it as-is without creating or removing it.
 func NewExecEnv(task Task, cfg Config, binaryPath string, logger *slog.Logger) (*ExecEnv, error) {
-	if cfg.WorkspacesRoot == "" {
-		return nil, fmt.Errorf("execenv: workspaces root is required")
-	}
 	if task.ID == "" {
 		return nil, fmt.Errorf("execenv: task ID is required")
 	}
@@ -63,7 +75,33 @@ func NewExecEnv(task Task, cfg Config, binaryPath string, logger *slog.Logger) (
 		return nil, fmt.Errorf("execenv: binary path is required")
 	}
 
-	workspaceDir := filepath.Join(cfg.WorkspacesRoot, task.ID)
+	mode := task.WorkspaceMode
+	if mode == "" {
+		mode = WorkspaceModeIsolated
+	}
+
+	var workspaceDir string
+
+	switch mode {
+	case WorkspaceModeExisting:
+		if task.WorkspacePath == "" {
+			return nil, fmt.Errorf("execenv: workspace path is required for existing mode")
+		}
+		// Validate the existing workspace path.
+		if err := validateExistingWorkspace(task.WorkspacePath); err != nil {
+			return nil, err
+		}
+		workspaceDir = task.WorkspacePath
+
+	case WorkspaceModeIsolated:
+		if cfg.WorkspacesRoot == "" {
+			return nil, fmt.Errorf("execenv: workspaces root is required")
+		}
+		workspaceDir = filepath.Join(cfg.WorkspacesRoot, task.ID)
+
+	default:
+		return nil, fmt.Errorf("execenv: invalid workspace mode: %q", mode)
+	}
 
 	envVars := task.EnvVars
 	if envVars == nil {
@@ -71,23 +109,58 @@ func NewExecEnv(task Task, cfg Config, binaryPath string, logger *slog.Logger) (
 	}
 
 	return &ExecEnv{
-		TaskID:       task.ID,
-		WorkspaceDir: workspaceDir,
-		Provider:     task.AgentType,
-		Prompt:       task.Prompt,
-		Model:        task.Model,
-		EnvVars:      envVars,
-		ArgsTemplate: task.ArgsTemplate,
-		CustomArgs:   task.CustomArgs,
-		BinaryPath:   binaryPath,
-		Logger:       logger,
+		TaskID:        task.ID,
+		WorkspaceDir:  workspaceDir,
+		Provider:      task.AgentType,
+		Prompt:        task.Prompt,
+		Model:         task.Model,
+		EnvVars:       envVars,
+		ArgsTemplate:  task.ArgsTemplate,
+		CustomArgs:    task.CustomArgs,
+		BinaryPath:    binaryPath,
+		WorkspaceMode: mode,
+		Logger:        logger,
 	}, nil
 }
 
+// validateExistingWorkspace checks that the given path exists, is a directory,
+// and is writable by the current process.
+func validateExistingWorkspace(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("workspace path does not exist: %s", path)
+		}
+		return fmt.Errorf("workspace path does not exist: %s", path)
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("workspace path is not a directory: %s", path)
+	}
+
+	// Check writability by attempting to create and immediately remove a temp file.
+	testFile := filepath.Join(path, ".agenticflow-write-test")
+	f, err := os.Create(testFile)
+	if err != nil {
+		return fmt.Errorf("workspace path is not writable: %s", path)
+	}
+	f.Close()
+	os.Remove(testFile)
+
+	return nil
+}
+
 // Setup creates the workspace directory for the task.
-// If the directory already exists, it is removed and recreated to ensure
-// a clean state (Requirement 10.6).
+// For "isolated" mode: if the directory already exists, it is removed and
+// recreated to ensure a clean state.
+// For "existing" mode: no-op (the directory is used as-is).
 func (e *ExecEnv) Setup() error {
+	if e.WorkspaceMode == WorkspaceModeExisting {
+		e.Logger.Info("execenv: using existing workspace", "path", e.WorkspaceDir)
+		return nil
+	}
+
+	// Isolated mode: clean slate.
 	// If workspace already exists, remove it first.
 	if _, err := os.Stat(e.WorkspaceDir); err == nil {
 		e.Logger.Info("execenv: removing existing workspace", "path", e.WorkspaceDir)
@@ -290,8 +363,21 @@ func (e *ExecEnv) RunWithStdin(ctx context.Context, stdout, stderr io.Writer) (i
 	return stdinPipe, done, nil
 }
 
+// ShouldCleanup returns whether the workspace directory should be removed
+// after task completion. Returns false for "existing" mode to preserve the
+// user's project directory.
+func (e *ExecEnv) ShouldCleanup() bool {
+	return e.WorkspaceMode != WorkspaceModeExisting
+}
+
 // Cleanup removes the workspace directory and all its contents.
+// For "existing" mode, this is a no-op to preserve the user's project directory.
 func (e *ExecEnv) Cleanup() error {
+	if !e.ShouldCleanup() {
+		e.Logger.Debug("execenv: skipping cleanup for existing workspace", "path", e.WorkspaceDir)
+		return nil
+	}
+
 	if err := os.RemoveAll(e.WorkspaceDir); err != nil {
 		e.Logger.Warn("execenv: cleanup failed", "path", e.WorkspaceDir, "error", err)
 		return fmt.Errorf("execenv: cleanup workspace %s: %w", e.WorkspaceDir, err)

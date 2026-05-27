@@ -41,6 +41,12 @@ type HTTPClient interface {
 	// ReportInputState notifies the server of input detection state changes.
 	// State is "waiting" when the CLI is waiting for input, "cleared" when output resumes.
 	ReportInputState(ctx context.Context, taskID string, state string) error
+	// ReportStageCompletion reports a workflow stage completion to the server.
+	// POST /api/daemon/tasks/{taskId}/stages/{stageName}/complete
+	ReportStageCompletion(ctx context.Context, taskID, stageName, outputContent string) error
+	// CompleteTaskConversational reports conversational task completion with session tracking.
+	// POST /api/daemon/tasks/{id}/complete with session_id and work_dir fields.
+	CompleteTaskConversational(ctx context.Context, taskID, output, sessionID, workDir string) error
 }
 
 // RegisterRequest is the payload sent to POST /api/daemon/register.
@@ -82,6 +88,26 @@ type PollResponse struct {
 	ArgsTemplate string            `json:"args_template,omitempty"`
 	EnvVars      map[string]string `json:"env_vars,omitempty"`
 	Agent        *TaskAgentData    `json:"agent,omitempty"`
+
+	// Stage-related fields (present only for staged tasks).
+	CurrentStage  *StageInfo   `json:"current_stage,omitempty"`
+	PriorStages   []PriorStage `json:"prior_stages,omitempty"`
+	WorkspaceMode string       `json:"workspace_mode,omitempty"`
+	WorkspacePath string       `json:"workspace_path,omitempty"`
+	StageFeedback string       `json:"stage_feedback,omitempty"`
+
+	// Conversational task fields (present only for conversational tasks).
+	DeliverableType string           `json:"deliverable_type,omitempty"`
+	PriorSessionID  string           `json:"prior_session_id,omitempty"`
+	PriorContext    []string         `json:"prior_context,omitempty"`
+	PriorWorkDir    string           `json:"prior_work_dir,omitempty"`
+	WorkspaceConfig *WorkspaceConfig `json:"workspace_config,omitempty"`
+}
+
+// WorkspaceConfig holds workspace configuration for execution-type conversational tasks.
+type WorkspaceConfig struct {
+	GitRepoURL         string `json:"git_repo_url,omitempty"`
+	LocalDirectoryPath string `json:"local_directory_path"`
 }
 
 // TaskMessage represents a single streaming output message from a task.

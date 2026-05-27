@@ -3,6 +3,11 @@ INSERT INTO task (user_id, agent_type, prompt, agent_id)
 VALUES ($1, $2, $3, $4)
 RETURNING *;
 
+-- name: CreateTaskWithWorkflow :one
+INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING *;
+
 -- name: GetTaskByID :one
 SELECT * FROM task
 WHERE id = $1;
