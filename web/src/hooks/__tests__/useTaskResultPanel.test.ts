@@ -53,8 +53,8 @@ let statusChangeCallback: ((status: ConnectionStatus) => void) | null = null;
 const mockUnsubscribe = vi.fn();
 let mockWsStatus: ConnectionStatus = "connected";
 
-vi.mock("../../lib/ws", () => ({
-  wsClient: {
+vi.mock("../../contexts/WebSocketContext", () => ({
+  useWSClient: () => ({
     get status() {
       return mockWsStatus;
     },
@@ -62,7 +62,7 @@ vi.mock("../../lib/ws", () => ({
       statusChangeCallback = cb;
       return mockUnsubscribe;
     },
-  },
+  }),
 }));
 
 // ─── Mock: taskResultUtils ───────────────────────────────────────────────────

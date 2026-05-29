@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
-import { wsClient, type WSEvent } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
+import type { WSEvent } from "../lib/ws";
 
 export type StageStatus =
   | "pending"
@@ -37,6 +38,7 @@ export interface TaskStage {
  */
 export function useTaskStages(taskId: string) {
   const queryClient = useQueryClient();
+  const wsClient = useWSClient();
 
   const query = useQuery({
     queryKey: ["tasks", taskId, "stages"],
@@ -74,7 +76,7 @@ export function useTaskStages(taskId: string) {
     return () => {
       unsubscribers.forEach((unsub) => unsub());
     };
-  }, [taskId, queryClient]);
+  }, [taskId, queryClient, wsClient]);
 
   return query;
 }

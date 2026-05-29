@@ -13,11 +13,12 @@ const RECONNECT_INTERVAL = 5000; // 5 seconds
 
 /**
  * WebSocket client with auto-reconnect at 5-second intervals.
- * Manages a single WebSocket connection to the server.
+ * Exported as a class so consumers can instantiate and destroy independently.
  */
-class WebSocketClient {
+export class WebSocketClient {
   private ws: WebSocket | null = null;
   private url: string = "";
+  private token: string = "";
   private handlers: Map<string, Set<WSEventHandler>> = new Map();
   private statusListeners: Set<StatusListener> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -35,7 +36,7 @@ class WebSocketClient {
 
   /**
    * Connect to the WebSocket server.
-   * Uses the stored PAT token for authentication via query parameter.
+   * Uses the stored PAT token for authentication via Sec-WebSocket-Protocol header.
    */
   connect(): void {
     const token = localStorage.getItem("af_token");
@@ -44,7 +45,8 @@ class WebSocketClient {
     }
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+    this.url = `${protocol}//${window.location.host}/ws`;
+    this.token = token;
 
     this.intentionalClose = false;
     this.doConnect();
@@ -58,7 +60,7 @@ class WebSocketClient {
     this.setStatus("connecting");
 
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.url, [`access_token.${this.token}`]);
 
       this.ws.onopen = () => {
         this.setStatus("connected");
@@ -101,6 +103,23 @@ class WebSocketClient {
       this.ws = null;
     }
     this.setStatus("disconnected");
+  }
+
+  /**
+   * Destroy the client instance: closes the connection, clears all event
+   * handlers and status listeners, and sets status to "disconnected".
+   * Use this for cleanup when the client is no longer needed (e.g., on unmount).
+   */
+  destroy(): void {
+    this.intentionalClose = true;
+    this.clearReconnectTimer();
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.handlers.clear();
+    this.statusListeners.clear();
+    this._status = "disconnected";
   }
 
   /**
@@ -158,5 +177,5 @@ class WebSocketClient {
   }
 }
 
-// Singleton instance
-export const wsClient = new WebSocketClient();
+// Module-level singleton removed. Use WebSocketProvider + useWSClient() from
+// contexts/WebSocketContext.tsx to access the WebSocketClient instance.

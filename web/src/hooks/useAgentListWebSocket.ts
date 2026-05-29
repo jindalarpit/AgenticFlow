@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { wsClient, type WSEvent } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
+import type { WSEvent } from "../lib/ws";
 import type { AgentListItem } from "./useAgentList";
 
 /**
@@ -19,6 +20,7 @@ import type { AgentListItem } from "./useAgentList";
  */
 export function useAgentListWebSocket(): void {
   const queryClient = useQueryClient();
+  const wsClient = useWSClient();
 
   useEffect(() => {
     const handleStatusChanged = (event: WSEvent) => {
@@ -87,5 +89,5 @@ export function useAgentListWebSocket(): void {
     return () => {
       unsubs.forEach((fn) => fn());
     };
-  }, [queryClient]);
+  }, [queryClient, wsClient]);
 }

@@ -62,6 +62,9 @@ SELECT a.* FROM agent a
 JOIN task t ON t.agent_id = a.id
 WHERE t.id = $1;
 
+-- name: UpdateAgentStatus :exec
+UPDATE agent SET status = @status, updated_at = now() WHERE id = @id;
+
 -- name: ClaimPendingTaskForRuntime :one
 UPDATE task SET
     status = 'running',

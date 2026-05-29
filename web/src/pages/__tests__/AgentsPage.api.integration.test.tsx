@@ -29,15 +29,15 @@ vi.mock("../../lib/api", () => ({
   hasToken: vi.fn(() => true),
 }));
 
-// Mock wsClient
-vi.mock("../../lib/ws", () => ({
-  wsClient: {
+// Mock wsClient via context
+vi.mock("../../contexts/WebSocketContext", () => ({
+  useWSClient: () => ({
     on: vi.fn(() => () => {}),
     connect: vi.fn(),
     disconnect: vi.fn(),
     status: "connected",
     onStatusChange: vi.fn(() => () => {}),
-  },
+  }),
 }));
 
 // Mock useNavigate

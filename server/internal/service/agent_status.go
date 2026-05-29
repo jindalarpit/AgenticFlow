@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 	"github.com/agenticflow/agenticflow/server/internal/realtime"
 	"github.com/agenticflow/agenticflow/shared/constants"
+	"github.com/agenticflow/agenticflow/shared/pgutil"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -42,14 +44,24 @@ func DeriveAgentStatus(runtimeStatus string, activeTaskCount int) AgentStatus {
 type AgentStatusService struct {
 	queries *db.Queries
 	hub     *realtime.Hub
+	bgCtx   context.Context // parent context for background goroutines; checked for cancellation
+	wg      sync.WaitGroup  // tracks in-flight reconciliation goroutines
 }
 
 // NewAgentStatusService creates a new AgentStatusService.
-func NewAgentStatusService(queries *db.Queries, hub *realtime.Hub) *AgentStatusService {
+// The bgCtx is the parent context for all background reconciliation goroutines;
+// when cancelled, goroutines will exit promptly.
+func NewAgentStatusService(queries *db.Queries, hub *realtime.Hub, bgCtx context.Context) *AgentStatusService {
 	return &AgentStatusService{
 		queries: queries,
 		hub:     hub,
+		bgCtx:   bgCtx,
 	}
+}
+
+// Wait blocks until all in-flight reconciliation goroutines have completed.
+func (s *AgentStatusService) Wait() {
+	s.wg.Wait()
 }
 
 // DeriveStatus computes the current status for the given agent.
@@ -106,8 +118,18 @@ func (s *AgentStatusService) ReconcileAndBroadcast(ctx context.Context, agentID 
 		return
 	}
 
-	// Broadcast the status change event using the dedicated method.
-	agentIDStr := uuidToString(agentID)
+	// Persist FIRST — update the database before broadcasting.
+	err = s.queries.UpdateAgentStatus(ctx, db.UpdateAgentStatusParams{
+		ID:     agentID,
+		Status: string(newStatus),
+	})
+	if err != nil {
+		slog.Error("failed to persist agent status", "error", err, "agent_id", agentID)
+		return // skip broadcast on DB failure
+	}
+
+	// Then broadcast the status change event.
+	agentIDStr := pgutil.UUIDToString(agentID)
 	s.hub.BroadcastAgentStatusChanged(agentIDStr, string(newStatus))
 
 	slog.Info("agent status changed",
@@ -122,25 +144,44 @@ func (s *AgentStatusService) ReconcileAndBroadcast(ctx context.Context, agentID 
 // connects or disconnects. It runs asynchronously to meet the 2-second
 // requirement for status recomputation.
 func (s *AgentStatusService) ReconcileAgentsForDaemon(ctx context.Context, daemonDBID pgtype.UUID) {
+	// Check if the parent context is already cancelled (shutdown in progress).
+	if s.bgCtx.Err() != nil {
+		slog.Debug("skipping reconciliation for daemon: shutdown in progress",
+			"daemon_id", pgutil.UUIDToString(daemonDBID))
+		return
+	}
+
+	s.wg.Add(1)
 	go func() {
-		// Use a fresh context with a 2-second deadline to ensure timely recomputation.
-		reconcileCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer s.wg.Done()
+
+		// Use a context derived from the parent background context with a 2-second deadline.
+		// This ensures the goroutine exits promptly when shutdown is signaled.
+		reconcileCtx, cancel := context.WithTimeout(s.bgCtx, 2*time.Second)
 		defer cancel()
 
 		agents, err := s.queries.ListAgentsByDaemon(reconcileCtx, daemonDBID)
 		if err != nil {
+			if s.bgCtx.Err() != nil {
+				// Context cancelled due to shutdown — not an error.
+				return
+			}
 			slog.Error("reconcile agents for daemon: list agents failed",
-				"daemon_id", uuidToString(daemonDBID), "error", err)
+				"daemon_id", pgutil.UUIDToString(daemonDBID), "error", err)
 			return
 		}
 
 		for _, agent := range agents {
+			// Check for cancellation between iterations.
+			if s.bgCtx.Err() != nil {
+				return
+			}
 			s.ReconcileAndBroadcast(reconcileCtx, agent.ID)
 		}
 
 		if len(agents) > 0 {
 			slog.Info("reconciled agent statuses for daemon",
-				"daemon_id", uuidToString(daemonDBID),
+				"daemon_id", pgutil.UUIDToString(daemonDBID),
 				"agents_count", len(agents),
 			)
 		}
@@ -151,17 +192,32 @@ func (s *AgentStatusService) ReconcileAgentsForDaemon(ctx context.Context, daemo
 // when a task transitions to running/completed/failed/cancelled. It runs
 // asynchronously to meet the 2-second requirement for status recomputation.
 func (s *AgentStatusService) ReconcileAgentForTask(ctx context.Context, taskID pgtype.UUID) {
+	// Check if the parent context is already cancelled (shutdown in progress).
+	if s.bgCtx.Err() != nil {
+		slog.Debug("skipping reconciliation for task: shutdown in progress",
+			"task_id", pgutil.UUIDToString(taskID))
+		return
+	}
+
+	s.wg.Add(1)
 	go func() {
-		// Use a fresh context with a 2-second deadline to ensure timely recomputation.
-		reconcileCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer s.wg.Done()
+
+		// Use a context derived from the parent background context with a 2-second deadline.
+		// This ensures the goroutine exits promptly when shutdown is signaled.
+		reconcileCtx, cancel := context.WithTimeout(s.bgCtx, 2*time.Second)
 		defer cancel()
 
 		agent, err := s.queries.GetAgentByTaskID(reconcileCtx, taskID)
 		if err != nil {
+			if s.bgCtx.Err() != nil {
+				// Context cancelled due to shutdown — not an error.
+				return
+			}
 			// Task may not have an associated agent (legacy tasks or tasks without agent_id).
 			// This is not an error condition.
 			slog.Debug("reconcile agent for task: no agent found",
-				"task_id", uuidToString(taskID), "error", err)
+				"task_id", pgutil.UUIDToString(taskID), "error", err)
 			return
 		}
 
@@ -170,11 +226,7 @@ func (s *AgentStatusService) ReconcileAgentForTask(ctx context.Context, taskID p
 }
 
 // uuidToString converts a pgtype.UUID to its string representation.
+// This is a convenience wrapper around pgutil.UUIDToString for use within the service package.
 func uuidToString(id pgtype.UUID) string {
-	if !id.Valid {
-		return ""
-	}
-	b := id.Bytes
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	return pgutil.UUIDToString(id)
 }

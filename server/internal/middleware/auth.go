@@ -2,17 +2,16 @@ package middleware
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"github.com/agenticflow/agenticflow/server/internal/auth"
 	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/shared/httputil"
+	"github.com/agenticflow/agenticflow/shared/pgutil"
 )
 
 // Context keys for user identity.
@@ -119,21 +118,24 @@ func TTLForExpiry(now time.Time, expiresAt time.Time) time.Duration {
 // header. It extracts the Bearer token, validates it against the cache or
 // database, and sets the user ID in the request context.
 //
+// The pool parameter is used for bounded asynchronous last_used_at updates.
+// If pool is nil, the update is skipped.
+//
 // Returns HTTP 401 for missing, malformed, or expired tokens.
-func Auth(queries *db.Queries, cache *PATCache) func(http.Handler) http.Handler {
+func Auth(queries *db.Queries, cache *PATCache, pool *TokenUpdatePool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString := extractBearerToken(r)
 			if tokenString == "" {
 				slog.Debug("auth: no token found", "path", r.URL.Path)
-				writeJSON(w, http.StatusUnauthorized, `{"error":"missing authorization"}`)
+				httputil.WriteErrorJSON(w, http.StatusUnauthorized, "missing authorization")
 				return
 			}
 
 			// Only accept tokens with the af_ prefix.
 			if !strings.HasPrefix(tokenString, auth.PATPrefix) {
 				slog.Debug("auth: invalid token prefix", "path", r.URL.Path)
-				writeJSON(w, http.StatusUnauthorized, `{"error":"invalid token"}`)
+				httputil.WriteErrorJSON(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
 
@@ -150,11 +152,11 @@ func Auth(queries *db.Queries, cache *PATCache) func(http.Handler) http.Handler 
 			pat, err := queries.GetTokenByHash(r.Context(), hash)
 			if err != nil {
 				slog.Warn("auth: invalid PAT", "path", r.URL.Path, "error", err)
-				writeJSON(w, http.StatusUnauthorized, `{"error":"invalid or expired token"}`)
+				httputil.WriteErrorJSON(w, http.StatusUnauthorized, "invalid or expired token")
 				return
 			}
 
-			userID := pgUUIDToString(pat.UserID)
+			userID := pgutil.UUIDToString(pat.UserID)
 
 			// Cache the result with appropriate TTL.
 			var expiresAt time.Time
@@ -163,10 +165,15 @@ func Auth(queries *db.Queries, cache *PATCache) func(http.Handler) http.Handler 
 			}
 			cache.Set(hash, userID, TTLForExpiry(time.Now(), expiresAt))
 
-			// Update last_used_at asynchronously.
-			go func() {
-				_ = queries.UpdateTokenLastUsed(context.Background(), pat.ID)
-			}()
+			// Update last_used_at asynchronously via bounded worker pool.
+			if pool != nil {
+				patID := pat.ID
+				pool.Submit(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = queries.UpdateTokenLastUsed(ctx, patID)
+				})
+			}
 
 			ctx := WithUserID(r.Context(), userID)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -185,19 +192,4 @@ func extractBearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimPrefix(authHeader, prefix)
-}
-
-// writeJSON writes a JSON response with the given status code.
-func writeJSON(w http.ResponseWriter, status int, body string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
-}
-
-// pgUUIDToString converts a pgtype.UUID to its string representation.
-func pgUUIDToString(u pgtype.UUID) string {
-	if !u.Valid {
-		return ""
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x", u.Bytes[0:4], u.Bytes[4:6], u.Bytes[6:8], u.Bytes[8:10], u.Bytes[10:16])
 }

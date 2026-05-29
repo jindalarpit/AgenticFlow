@@ -6,7 +6,8 @@ import { useTimeline } from "../hooks/useTimeline";
 import { useSessionState } from "../hooks/useSessionState";
 import { useTaskStages } from "../hooks/useTaskStages";
 import { useQueryClient } from "@tanstack/react-query";
-import { wsClient, type WSEvent } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
+import type { WSEvent } from "../lib/ws";
 import { TaskInput } from "../components/TaskInput";
 import { formatCopyText } from "../lib/tool-chain-parser";
 import {
@@ -81,6 +82,7 @@ export default function TaskDetail() {
   const cancelTask = useCancelTask();
   const createTask = useCreateTask();
   const queryClient = useQueryClient();
+  const wsClient = useWSClient();
   const sessionState = useSessionState(taskId);
 
   // View mode state: "structured" (default) or "raw"
@@ -196,6 +198,7 @@ export default function TaskDetail() {
   }
 
   const isRunning = task.status === "running";
+  const isCancellable = task.status === "running" || task.status === "pending";
   const isTerminal = ["completed", "failed", "cancelled", "timeout"].includes(task.status);
 
   // Stage UI: only show when the task has stages (backward compat for single-pass tasks)
@@ -363,7 +366,7 @@ export default function TaskDetail() {
             </div>
             <div className="flex items-center gap-3">
               <ViewModeToggle taskId={taskId} mode={viewMode} onChange={setViewMode} />
-              {isRunning && (
+              {isCancellable && (
                 <button
                   onClick={handleCancel}
                   disabled={cancelTask.isPending}

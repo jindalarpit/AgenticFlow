@@ -48,6 +48,20 @@ func (q *Queries) ArchiveAgent(ctx context.Context, arg ArchiveAgentParams) (Age
 	return i, err
 }
 
+const updateAgentStatus = `-- name: UpdateAgentStatus :exec
+UPDATE agent SET status = $1, updated_at = now() WHERE id = $2
+`
+
+type UpdateAgentStatusParams struct {
+	Status string      `json:"status"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusParams) error {
+	_, err := q.db.Exec(ctx, updateAgentStatus, arg.Status, arg.ID)
+	return err
+}
+
 const claimPendingTaskForRuntime = `-- name: ClaimPendingTaskForRuntime :one
 UPDATE task SET
     status = 'running',

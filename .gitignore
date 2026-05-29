@@ -3,6 +3,8 @@ node_modules/
 web/node_modules/
 
 # Build outputs
+daemon/af
+daemon/bin/
 server/bin/
 server/af
 server/server

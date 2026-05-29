@@ -8,9 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/shared/pgutil"
 )
 
 const (
@@ -52,13 +51,5 @@ func ValidatePAT(ctx context.Context, queries *db.Queries, token string) (userID
 	if err != nil {
 		return "", fmt.Errorf("invalid or expired token: %w", err)
 	}
-	return uuidToString(pat.UserID), nil
-}
-
-// uuidToString converts a pgtype.UUID to its string representation.
-func uuidToString(u pgtype.UUID) string {
-	if !u.Valid {
-		return ""
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x", u.Bytes[0:4], u.Bytes[4:6], u.Bytes[6:8], u.Bytes[8:10], u.Bytes[10:16])
+	return pgutil.UUIDToString(pat.UserID), nil
 }

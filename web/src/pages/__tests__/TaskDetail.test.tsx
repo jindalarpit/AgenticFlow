@@ -162,12 +162,14 @@ vi.mock("../../hooks/useTaskInput", () => ({
   }),
 }));
 
-vi.mock("../../lib/ws", () => ({
-  wsClient: {
+vi.mock("../../contexts/WebSocketContext", () => ({
+  useWSClient: () => ({
     on: () => () => {},
     status: "connected",
     onStatusChange: () => () => {},
-  },
+    connect: () => {},
+    disconnect: () => {},
+  }),
 }));
 
 vi.mock("../../lib/tool-chain-parser", async (importOriginal) => {

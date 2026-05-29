@@ -3,9 +3,325 @@ package realtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
+
+	"pgregory.net/rapid"
 )
+
+// --------------------------------------------------------------------------
+// Property 6: Multi-connection fan-out
+// For any user with N active WebSocket connections (1 ≤ N ≤ 5), when the Hub
+// broadcasts an event to that user, all N connections SHALL receive the event.
+// **Validates: Requirements 15.2, 15.3**
+// --------------------------------------------------------------------------
+
+func TestProperty_MultiConnectionFanOut(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		n := rapid.IntRange(1, 5).Draw(t, "numConnections")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+		eventType := rapid.SampledFrom([]string{
+			EventTaskStarted, EventTaskCompleted, EventTaskFailed, EventTaskOutput,
+		}).Draw(t, "eventType")
+
+		hub := NewHub()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go hub.Run(ctx)
+
+		// Register N connections for the same user.
+		clients := make([]*Client, n)
+		for i := 0; i < n; i++ {
+			clients[i] = newTestClient(fmt.Sprintf("%s-conn-%d", userID, i), userID, false)
+			hub.register <- clients[i]
+		}
+		// Wait for all registrations to be processed.
+		time.Sleep(50 * time.Millisecond)
+
+		// Send an event to the user.
+		hub.SendToUser(userID, Event{
+			Type:    eventType,
+			Payload: map[string]string{"msg": "hello"},
+		})
+
+		// Verify all N connections receive the event.
+		for i, client := range clients {
+			select {
+			case msg := <-client.send:
+				var received Event
+				if err := json.Unmarshal(msg, &received); err != nil {
+					t.Fatalf("connection %d: failed to unmarshal: %v", i, err)
+				}
+				if received.Type != eventType {
+					t.Fatalf("connection %d: expected event type %q, got %q", i, eventType, received.Type)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("connection %d: timed out waiting for event", i)
+			}
+		}
+	})
+}
+
+func TestProperty_MultiConnectionFanOut_Broadcast(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		n := rapid.IntRange(1, 5).Draw(t, "numConnections")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+
+		hub := NewHub()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go hub.Run(ctx)
+
+		// Register N connections for the same user.
+		clients := make([]*Client, n)
+		for i := 0; i < n; i++ {
+			clients[i] = newTestClient(fmt.Sprintf("%s-conn-%d", userID, i), userID, false)
+			hub.register <- clients[i]
+		}
+		time.Sleep(50 * time.Millisecond)
+
+		// Broadcast an event to all users.
+		hub.Broadcast(Event{
+			Type:    "test_broadcast",
+			Payload: map[string]string{"data": "broadcast_msg"},
+		})
+
+		// Wait for broadcast to be processed.
+		time.Sleep(50 * time.Millisecond)
+
+		// Verify all N connections receive the broadcast.
+		for i, client := range clients {
+			select {
+			case msg := <-client.send:
+				var received Event
+				if err := json.Unmarshal(msg, &received); err != nil {
+					t.Fatalf("connection %d: failed to unmarshal: %v", i, err)
+				}
+				if received.Type != "test_broadcast" {
+					t.Fatalf("connection %d: expected event type %q, got %q", i, "test_broadcast", received.Type)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("connection %d: timed out waiting for broadcast", i)
+			}
+		}
+	})
+}
+
+// --------------------------------------------------------------------------
+// Property 7: Connection limit enforcement
+// For any user attempting to open more than 5 concurrent WebSocket connections,
+// the Hub SHALL maintain at most 5 active connections for that user.
+// **Validates: Requirements 15.5**
+// --------------------------------------------------------------------------
+
+func TestProperty_ConnectionLimitEnforcement(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate between 6 and 10 connection attempts.
+		numAttempts := rapid.IntRange(6, 10).Draw(t, "numAttempts")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+
+		hub := NewHub()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go hub.Run(ctx)
+
+		// Register more than maxConnectionsPerUser connections.
+		clients := make([]*Client, numAttempts)
+		for i := 0; i < numAttempts; i++ {
+			clients[i] = newTestClient(fmt.Sprintf("%s-conn-%d", userID, i), userID, false)
+			hub.register <- clients[i]
+		}
+		// Wait for all registrations to be processed.
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify the hub maintains at most maxConnectionsPerUser active connections.
+		hub.mu.RLock()
+		activeConns := len(hub.clients[userID])
+		hub.mu.RUnlock()
+
+		if activeConns > maxConnectionsPerUser {
+			t.Fatalf("expected at most %d active connections, got %d", maxConnectionsPerUser, activeConns)
+		}
+		if activeConns != maxConnectionsPerUser {
+			t.Fatalf("expected exactly %d active connections (limit reached), got %d", maxConnectionsPerUser, activeConns)
+		}
+
+		// Verify the most recent 5 connections are the ones kept (oldest evicted).
+		hub.mu.RLock()
+		conns := hub.clients[userID]
+		hub.mu.RUnlock()
+
+		// The last maxConnectionsPerUser clients should be the active ones.
+		expectedStart := numAttempts - maxConnectionsPerUser
+		for i, c := range conns {
+			expectedID := fmt.Sprintf("%s-conn-%d", userID, expectedStart+i)
+			if c.ID != expectedID {
+				t.Fatalf("connection %d: expected ID %q, got %q", i, expectedID, c.ID)
+			}
+		}
+	})
+}
+
+func TestProperty_ConnectionLimitEnforcement_EventDelivery(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate between 6 and 10 connection attempts.
+		numAttempts := rapid.IntRange(6, 10).Draw(t, "numAttempts")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+
+		hub := NewHub()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go hub.Run(ctx)
+
+		// Register more than maxConnectionsPerUser connections.
+		clients := make([]*Client, numAttempts)
+		for i := 0; i < numAttempts; i++ {
+			clients[i] = newTestClient(fmt.Sprintf("%s-conn-%d", userID, i), userID, false)
+			hub.register <- clients[i]
+		}
+		time.Sleep(100 * time.Millisecond)
+
+		// Send an event to the user.
+		hub.SendToUser(userID, Event{
+			Type:    "test_event",
+			Payload: map[string]string{"key": "value"},
+		})
+
+		// Only the last maxConnectionsPerUser clients should receive the event.
+		expectedStart := numAttempts - maxConnectionsPerUser
+		for i := expectedStart; i < numAttempts; i++ {
+			select {
+			case msg := <-clients[i].send:
+				var received Event
+				if err := json.Unmarshal(msg, &received); err != nil {
+					t.Fatalf("client %d: failed to unmarshal: %v", i, err)
+				}
+				if received.Type != "test_event" {
+					t.Fatalf("client %d: expected type %q, got %q", i, "test_event", received.Type)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("client %d: timed out waiting for event", i)
+			}
+		}
+	})
+}
+
+// --------------------------------------------------------------------------
+// Property 8: Selective connection removal
+// For any user with N active connections (N > 1), closing one specific connection
+// SHALL leave exactly N-1 connections active, and those remaining connections
+// SHALL continue to receive broadcast events.
+// **Validates: Requirements 15.4**
+// --------------------------------------------------------------------------
+
+func TestProperty_SelectiveConnectionRemoval(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		n := rapid.IntRange(2, 5).Draw(t, "numConnections")
+		removeIdx := rapid.IntRange(0, n-1).Draw(t, "removeIndex")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+
+		hub := NewHub()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go hub.Run(ctx)
+
+		// Register N connections for the same user.
+		clients := make([]*Client, n)
+		for i := 0; i < n; i++ {
+			clients[i] = newTestClient(fmt.Sprintf("%s-conn-%d", userID, i), userID, false)
+			hub.register <- clients[i]
+		}
+		time.Sleep(50 * time.Millisecond)
+
+		// Unregister one specific connection.
+		hub.unregister <- clients[removeIdx]
+		time.Sleep(50 * time.Millisecond)
+
+		// Verify N-1 connections remain.
+		hub.mu.RLock()
+		activeConns := len(hub.clients[userID])
+		hub.mu.RUnlock()
+
+		if activeConns != n-1 {
+			t.Fatalf("expected %d active connections after removal, got %d", n-1, activeConns)
+		}
+
+		// Send an event to the user and verify remaining connections receive it.
+		hub.SendToUser(userID, Event{
+			Type:    "post_removal_event",
+			Payload: map[string]string{"check": "alive"},
+		})
+
+		for i, client := range clients {
+			if i == removeIdx {
+				// The removed client's send channel was closed by the hub.
+				// We should NOT receive new messages on it (channel is closed).
+				continue
+			}
+			select {
+			case msg := <-client.send:
+				var received Event
+				if err := json.Unmarshal(msg, &received); err != nil {
+					t.Fatalf("connection %d: failed to unmarshal: %v", i, err)
+				}
+				if received.Type != "post_removal_event" {
+					t.Fatalf("connection %d: expected type %q, got %q", i, "post_removal_event", received.Type)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("connection %d: timed out waiting for event after removal", i)
+			}
+		}
+	})
+}
+
+func TestProperty_SelectiveConnectionRemoval_OthersUnaffected(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		n := rapid.IntRange(2, 5).Draw(t, "numConnections")
+		removeIdx := rapid.IntRange(0, n-1).Draw(t, "removeIndex")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+
+		hub := NewHub()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go hub.Run(ctx)
+
+		// Register N connections.
+		clients := make([]*Client, n)
+		for i := 0; i < n; i++ {
+			clients[i] = newTestClient(fmt.Sprintf("%s-conn-%d", userID, i), userID, false)
+			hub.register <- clients[i]
+		}
+		time.Sleep(50 * time.Millisecond)
+
+		// Unregister one connection.
+		hub.unregister <- clients[removeIdx]
+		time.Sleep(50 * time.Millisecond)
+
+		// Verify the remaining connections are exactly the ones we expect.
+		hub.mu.RLock()
+		conns := hub.clients[userID]
+		hub.mu.RUnlock()
+
+		// Build expected set of remaining client IDs.
+		expectedIDs := make(map[string]bool)
+		for i := 0; i < n; i++ {
+			if i != removeIdx {
+				expectedIDs[clients[i].ID] = true
+			}
+		}
+
+		if len(conns) != len(expectedIDs) {
+			t.Fatalf("expected %d remaining connections, got %d", len(expectedIDs), len(conns))
+		}
+
+		for _, c := range conns {
+			if !expectedIDs[c.ID] {
+				t.Fatalf("unexpected connection %q in remaining list", c.ID)
+			}
+		}
+	})
+}
 
 // newTestClient creates a Client for testing with a buffered send channel.
 func newTestClient(id, userID string, isDaemon bool) *Client {

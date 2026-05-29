@@ -14,25 +14,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  check-binaries:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+
+      - name: Detect committed binaries
+        run: |
+          found=0
+          for f in $(git ls-files); do
+            if [ -f "$f" ]; then
+              type=$(file "$f")
+              if echo "$type" | grep -qE 'ELF|Mach-O|PE32'; then
+                echo "ERROR: Binary file committed: $f"
+                found=1
+              fi
+            fi
+          done
+          exit $found
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
+          go-version-file: go.work
 
-      - name: Build
-        run: cd server && go build ./...
+      - name: Build all modules
+        run: |
+          cd server && go build ./...
+          cd ../daemon && go build ./...
+          cd ../shared && go build ./...
 
-      - name: Test
-        run: cd server && go test ./...
+      - name: Vet all modules
+        run: |
+          cd server && go vet ./...
+          cd ../daemon && go vet ./...
+          cd ../shared && go vet ./...
+
+      - name: Test all modules
+        run: |
+          cd server && go test ./...
+          cd ../daemon && go test ./...
+          cd ../shared && go test ./...
 
   validate-goreleaser:
     runs-on: ubuntu-latest
@@ -45,8 +74,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
+          go-version-file: go.work
 
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -67,7 +95,6 @@ jobs:
           for archive in dist/*.tar.gz; do
             basename="$(basename "$archive")"
             if ! echo "$basename" | grep -qE '^af-[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT-[a-f0-9]+-[a-z]+-[a-z0-9]+\.tar\.gz$'; then
-              # Snapshot versions use a different format; check the base pattern
               if ! echo "$basename" | grep -qE '^af-.*-(darwin|linux)-(amd64|arm64)\.tar\.gz$'; then
                 echo "ERROR: Archive '$basename' does not match expected pattern af-{version}-{os}-{arch}.tar.gz"
                 exit 1

@@ -59,12 +59,12 @@ type CreatePATResponse struct {
 
 // PATHandler holds dependencies for PAT HTTP handlers.
 type PATHandler struct {
-	Queries  *db.Queries
+	Queries  db.Querier
 	PATCache *middleware.PATCache
 }
 
 // NewPATHandler creates a new PATHandler.
-func NewPATHandler(queries *db.Queries, cache *middleware.PATCache) *PATHandler {
+func NewPATHandler(queries db.Querier, cache *middleware.PATCache) *PATHandler {
 	return &PATHandler{Queries: queries, PATCache: cache}
 }
 

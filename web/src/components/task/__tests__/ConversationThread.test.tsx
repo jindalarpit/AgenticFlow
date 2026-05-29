@@ -4,22 +4,27 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConversationThread } from "../ConversationThread";
 import type { PromptHistoryEntry } from "../ConversationThread";
 import { apiFetch } from "../../../lib/api";
-import { wsClient } from "../../../lib/ws";
 
 // Mock the api module
 vi.mock("../../../lib/api", () => ({
   apiFetch: vi.fn(),
 }));
 
-// Mock the ws module
-vi.mock("../../../lib/ws", () => ({
-  wsClient: {
-    on: vi.fn(() => vi.fn()),
-  },
+// Mock the WebSocket context
+const mockWsClient = {
+  on: vi.fn(() => vi.fn()),
+  onStatusChange: vi.fn(() => vi.fn()),
+  connect: vi.fn(),
+  disconnect: vi.fn(),
+  destroy: vi.fn(),
+  status: "disconnected" as const,
+};
+
+vi.mock("../../../contexts/WebSocketContext", () => ({
+  useWSClient: () => mockWsClient,
 }));
 
 const mockedApiFetch = vi.mocked(apiFetch);
-const mockedWsClient = vi.mocked(wsClient);
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -190,7 +195,7 @@ describe("ConversationThread", () => {
         { wrapper: createWrapper() }
       );
 
-      expect(mockedWsClient.on).toHaveBeenCalledWith(
+      expect(mockWsClient.on).toHaveBeenCalledWith(
         "task_completed",
         expect.any(Function)
       );

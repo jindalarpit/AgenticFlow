@@ -2,11 +2,14 @@
 package handler
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/agenticflow/agenticflow/server/internal/service"
+	"github.com/agenticflow/agenticflow/shared/httputil"
+	"github.com/agenticflow/agenticflow/shared/pgutil"
 )
 
 // parseUUID parses a UUID string into a pgtype.UUID.
@@ -22,17 +25,26 @@ func parseUUID(s string) (pgtype.UUID, error) {
 }
 
 // uuidToString converts a pgtype.UUID to its string representation.
+// This is a convenience wrapper around pgutil.UUIDToString for use within the handler package.
 func uuidToString(u pgtype.UUID) string {
-	if !u.Valid {
-		return ""
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x",
-		u.Bytes[0:4], u.Bytes[4:6], u.Bytes[6:8], u.Bytes[8:10], u.Bytes[10:16])
+	return pgutil.UUIDToString(u)
 }
 
 // writeJSON writes a JSON response with the given status code.
+// This is a convenience wrapper around httputil.WriteJSON for use within the handler package.
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	httputil.WriteJSON(w, status, v)
+}
+
+// writeErrorJSON writes a JSON error response.
+// This is a convenience wrapper around httputil.WriteErrorJSON for use within the handler package.
+func writeErrorJSON(w http.ResponseWriter, status int, message string) {
+	httputil.WriteErrorJSON(w, status, message)
+}
+
+// handleServiceError maps a *service.ServiceError to the appropriate HTTP
+// response. It uses ErrorKind.HTTPStatus() to determine the status code and
+// writes the error message as a JSON body.
+func handleServiceError(w http.ResponseWriter, err *service.ServiceError) {
+	writeErrorJSON(w, err.Kind.HTTPStatus(), err.Message)
 }

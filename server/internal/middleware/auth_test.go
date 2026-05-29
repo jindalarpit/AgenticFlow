@@ -1,15 +1,18 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"pgregory.net/rapid"
 )
 
 func TestAuth_MissingHeader(t *testing.T) {
 	cache := NewPATCache()
-	handler := Auth(nil, cache)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Auth(nil, cache, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	}))
 
@@ -24,7 +27,7 @@ func TestAuth_MissingHeader(t *testing.T) {
 
 func TestAuth_NonBearerHeader(t *testing.T) {
 	cache := NewPATCache()
-	handler := Auth(nil, cache)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Auth(nil, cache, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	}))
 
@@ -40,7 +43,7 @@ func TestAuth_NonBearerHeader(t *testing.T) {
 
 func TestAuth_InvalidPrefix(t *testing.T) {
 	cache := NewPATCache()
-	handler := Auth(nil, cache)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Auth(nil, cache, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	}))
 
@@ -63,7 +66,7 @@ func TestAuth_CacheHit(t *testing.T) {
 
 	var gotUserID string
 	// Pass nil queries — a cache miss would panic on nil dereference.
-	handler := Auth(nil, cache)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Auth(nil, cache, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID = ContextUserID(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -174,4 +177,128 @@ func TestPATCache_SetWithNegativeTTL(t *testing.T) {
 	if ok {
 		t.Fatal("expected cache miss when TTL is negative")
 	}
+}
+
+// Property 2: Token expiry cache eviction
+//
+// For any PAT with an `expires_at` timestamp T, if the current time is after T,
+// then PATCache.Get() returns (_, false) regardless of when the token was cached.
+// When `expires_at` is in the future, PATCache.Get() returns the cached userID.
+// The cache deletes expired entries on retrieval.
+//
+// **Validates: Requirements 6.2, 6.4**
+
+func TestProperty2_TokenExpiryCacheEviction_ExpiredTokensReturnFalse(t *testing.T) {
+	// Property 2: Token expiry cache eviction
+	// For any PAT with an expires_at in the past, PATCache.Get() returns (_, false).
+	// We simulate this by setting entries with a 1-nanosecond TTL, which guarantees
+	// the entry is expired by the time Get() checks time.Now().
+	rapid.Check(t, func(t *rapid.T) {
+		cache := NewPATCache()
+
+		// Generate random token hash and user ID
+		hash := rapid.StringMatching(`[a-f0-9]{64}`).Draw(t, "hash")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+
+		// Set with a 1-nanosecond TTL — by the time Get() runs, it will be expired
+		cache.Set(hash, userID, 1*time.Nanosecond)
+
+		// Small sleep to ensure the nanosecond has passed
+		time.Sleep(time.Microsecond)
+
+		// Get must return false for expired entries
+		_, ok := cache.Get(hash)
+		if ok {
+			t.Fatalf("expected cache miss for expired token (hash=%s, userID=%s)", hash, userID)
+		}
+
+		// Verify the entry was deleted (second Get also returns false)
+		_, ok = cache.Get(hash)
+		if ok {
+			t.Fatal("expected expired entry to be deleted from cache after first Get")
+		}
+	})
+}
+
+func TestProperty2_TokenExpiryCacheEviction_ValidTokensReturnUserID(t *testing.T) {
+	// Property 2: Token expiry cache eviction
+	// For any PAT with an expires_at in the future, PATCache.Get() returns the
+	// cached userID.
+	rapid.Check(t, func(t *rapid.T) {
+		cache := NewPATCache()
+
+		// Generate random token hash and user ID
+		hash := rapid.StringMatching(`[a-f0-9]{64}`).Draw(t, "hash")
+		userID := fmt.Sprintf("user-%s", rapid.StringMatching(`[a-z0-9]{8}`).Draw(t, "userID"))
+
+		// Generate a TTL between 1 second and 5 minutes (well in the future)
+		ttlSeconds := rapid.IntRange(1, 300).Draw(t, "ttlSeconds")
+		ttl := time.Duration(ttlSeconds) * time.Second
+
+		cache.Set(hash, userID, ttl)
+
+		// Get must return the cached userID
+		gotUserID, ok := cache.Get(hash)
+		if !ok {
+			t.Fatalf("expected cache hit for valid token (hash=%s, ttl=%v)", hash, ttl)
+		}
+		if gotUserID != userID {
+			t.Fatalf("expected userID %q, got %q", userID, gotUserID)
+		}
+	})
+}
+
+func TestProperty2_TokenExpiryCacheEviction_CacheDeletesExpiredOnRetrieval(t *testing.T) {
+	// Property 2: Token expiry cache eviction
+	// The cache deletes expired entries on retrieval. After Get() returns false
+	// for an expired entry, the entry is no longer in the underlying store.
+	rapid.Check(t, func(t *rapid.T) {
+		cache := NewPATCache()
+
+		// Generate multiple entries, some expired and some valid
+		numEntries := rapid.IntRange(1, 20).Draw(t, "numEntries")
+
+		type entry struct {
+			hash    string
+			userID  string
+			expired bool
+		}
+		entries := make([]entry, numEntries)
+
+		for i := 0; i < numEntries; i++ {
+			hash := fmt.Sprintf("hash-%d-%s", i, rapid.StringMatching(`[a-f0-9]{16}`).Draw(t, fmt.Sprintf("hash_%d", i)))
+			userID := fmt.Sprintf("user-%d", i)
+			expired := rapid.Bool().Draw(t, fmt.Sprintf("expired_%d", i))
+
+			var ttl time.Duration
+			if expired {
+				ttl = 1 * time.Nanosecond
+			} else {
+				ttl = 5 * time.Minute
+			}
+
+			cache.Set(hash, userID, ttl)
+			entries[i] = entry{hash: hash, userID: userID, expired: expired}
+		}
+
+		// Wait to ensure nanosecond TTLs have expired
+		time.Sleep(time.Microsecond)
+
+		// Verify each entry behaves correctly
+		for _, e := range entries {
+			gotUserID, ok := cache.Get(e.hash)
+			if e.expired {
+				if ok {
+					t.Fatalf("expected cache miss for expired entry (hash=%s)", e.hash)
+				}
+			} else {
+				if !ok {
+					t.Fatalf("expected cache hit for valid entry (hash=%s)", e.hash)
+				}
+				if gotUserID != e.userID {
+					t.Fatalf("expected userID %q, got %q for hash=%s", e.userID, gotUserID, e.hash)
+				}
+			}
+		}
+	})
 }

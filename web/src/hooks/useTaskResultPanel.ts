@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTask, useTaskMessages, type Task, type TaskMessage } from "./useTasks";
 import { useTaskStream } from "./useTaskStream";
-import { wsClient, type ConnectionStatus } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
+import type { ConnectionStatus } from "../lib/ws";
 import {
   loadTaskResultPanelState,
   saveTaskResultPanelState,
@@ -57,6 +58,7 @@ const POLL_INTERVAL_MS = 3000;
  */
 export function useTaskResultPanel(): UseTaskResultPanelReturn {
   const queryClient = useQueryClient();
+  const wsClient = useWSClient();
 
   // ─── Core state ───
   const [panelTaskId, setPanelTaskId] = useState<string | null>(null);
@@ -108,7 +110,7 @@ export function useTaskResultPanel(): UseTaskResultPanelReturn {
       setWsConnected(status === "connected");
     });
     return unsubscribe;
-  }, []);
+  }, [wsClient]);
 
   // ─── Polling fallback ───
   useEffect(() => {

@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "react-router-dom";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { ConnectionIndicator } from "./ConnectionIndicator";
-import { wsClient } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -19,6 +19,7 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const { status } = useWebSocket();
   const queryClient = useQueryClient();
+  const wsClient = useWSClient();
 
   // Refetch agent (and other) data on WebSocket reconnection.
   // Events may have been missed while disconnected, so invalidate caches
@@ -35,7 +36,7 @@ export function Layout({ children }: LayoutProps) {
     return () => {
       unsubStatus();
     };
-  }, [queryClient]);
+  }, [queryClient, wsClient]);
 
   // Global WebSocket event → React Query cache invalidation
   useEffect(() => {
@@ -86,7 +87,7 @@ export function Layout({ children }: LayoutProps) {
       unsubAgentUpdated();
       unsubAgentDeleted();
     };
-  }, [queryClient]);
+  }, [queryClient, wsClient]);
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
