@@ -4,6 +4,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -11,6 +12,19 @@ import (
 	"github.com/agenticflow/agenticflow/shared/httputil"
 	"github.com/agenticflow/agenticflow/shared/pgutil"
 )
+
+// Validation constants mirrored from service layer for use in handler-level
+// property tests. These must stay in sync with service/agent_service.go.
+const (
+	maxCustomEnvPairs       = 20
+	maxCustomEnvKeyLength   = 64
+	maxCustomEnvValueLength = 1024
+)
+
+// agentNameRegex validates agent names: starts with alphanumeric,
+// followed by alphanumeric, hyphens, or underscores. 1-64 chars total.
+// Mirrored from service/agent_service.go for handler-level property tests.
+var agentNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
 // parseUUID parses a UUID string into a pgtype.UUID.
 func parseUUID(s string) (pgtype.UUID, error) {
