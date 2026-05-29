@@ -14,41 +14,39 @@ import { createElement, type ReactNode } from "react";
 
 import { useAgentListWebSocket } from "../useAgentListWebSocket";
 import type { AgentListItem } from "../useAgentList";
-import { wsClient, type WSEvent } from "../../lib/ws";
+import type { WSEvent } from "../../lib/ws";
 
-// ─── Mock wsClient ───────────────────────────────────────────────────────────
+// ─── Mock useWSClient ────────────────────────────────────────────────────────
 
-vi.mock("../../lib/ws", () => {
-  const handlers = new Map<string, Set<(event: WSEvent) => void>>();
+const handlers = new Map<string, Set<(event: WSEvent) => void>>();
 
-  return {
-    wsClient: {
-      on: vi.fn((eventType: string, handler: (event: WSEvent) => void) => {
-        if (!handlers.has(eventType)) {
-          handlers.set(eventType, new Set());
-        }
-        handlers.get(eventType)!.add(handler);
-        return () => {
-          handlers.get(eventType)?.delete(handler);
-        };
-      }),
-      // Helper to simulate events in tests
-      __simulateEvent: (event: WSEvent) => {
-        const typeHandlers = handlers.get(event.type);
-        if (typeHandlers) {
-          typeHandlers.forEach((handler) => handler(event));
-        }
-      },
-      __clearHandlers: () => {
-        handlers.clear();
-      },
-    },
-  };
-});
+const mockWsClient = {
+  on: vi.fn((eventType: string, handler: (event: WSEvent) => void) => {
+    if (!handlers.has(eventType)) {
+      handlers.set(eventType, new Set());
+    }
+    handlers.get(eventType)!.add(handler);
+    return () => {
+      handlers.get(eventType)?.delete(handler);
+    };
+  }),
+};
 
-// Access the test helper
-const simulateEvent = (wsClient as unknown as { __simulateEvent: (e: WSEvent) => void }).__simulateEvent;
-const clearHandlers = (wsClient as unknown as { __clearHandlers: () => void }).__clearHandlers;
+vi.mock("../../contexts/WebSocketContext", () => ({
+  useWSClient: () => mockWsClient,
+}));
+
+// Test helpers
+function simulateEvent(event: WSEvent) {
+  const typeHandlers = handlers.get(event.type);
+  if (typeHandlers) {
+    typeHandlers.forEach((handler) => handler(event));
+  }
+}
+
+function clearHandlers() {
+  handlers.clear();
+}
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 

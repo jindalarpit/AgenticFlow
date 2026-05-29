@@ -2,7 +2,9 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Layout } from "./components/Layout";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastProvider } from "./components/Toast";
+import { WebSocketProvider } from "./contexts/WebSocketContext";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import AgentsPage from "./pages/AgentsPage";
@@ -25,129 +27,155 @@ function Placeholder({ title }: { title: string }) {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <Dashboard />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/tasks/:id"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
-                    <TaskDetail />
-                  </Suspense>
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/history"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <Placeholder title="Task History" />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/agents"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <AgentsPage />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/agents/new"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
-                    <AgentCreatePage />
-                  </Suspense>
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/agents/:id/edit"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
-                    <AgentEditPage />
-                  </Suspense>
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/agents/:id"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <AgentDetail />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/skills"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <SkillList />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/skills/new"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <SkillForm />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/skills/:id/edit"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <SkillForm />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <Settings />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
-    </ToastProvider>
+    <ErrorBoundary>
+      <WebSocketProvider>
+        <ToastProvider>
+          <BrowserRouter>
+            <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Dashboard />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/tasks/:id"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                        <TaskDetail />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/history"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Placeholder title="Task History" />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/agents"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <AgentsPage />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/agents/new"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                        <AgentCreatePage />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/agents/:id/edit"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                        <AgentEditPage />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/agents/:id"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <AgentDetail />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/skills"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <SkillList />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/skills/new"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <SkillForm />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/skills/:id/edit"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <SkillForm />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Settings />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </ToastProvider>
+      </WebSocketProvider>
+    </ErrorBoundary>
   );
 }

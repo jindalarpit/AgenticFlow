@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -293,5 +294,131 @@ func TestExecute_InvalidBinaryPath(t *testing.T) {
 	}
 	if result.ExitCode != -1 {
 		t.Errorf("exit code = %d, want -1", result.ExitCode)
+	}
+}
+
+func TestExecuteWithHooks_BriefInjection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+
+	// Create a script that echoes its arguments (the prompt becomes an arg).
+	script := filepath.Join(tmpDir, "echo_prompt.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	reporter := &mockReporter{}
+	executor := NewExecutor(testExecutorLogger(), reporter)
+
+	cfg := TaskConfig{
+		TaskID:         "task-hooks-brief",
+		AgentType:      "custom-agent",
+		Prompt:         "original prompt",
+		BinaryPath:     script,
+		WorkspaceMode:  execenv.WorkspaceModeIsolated,
+		WorkspacesRoot: tmpDir,
+		AgentTimeout:   30 * time.Second,
+	}
+
+	hooks := ExecutionHooks{
+		BriefInjector: func(prompt string) (string, string, error) {
+			return "injected: " + prompt, "system-prompt-value", nil
+		},
+	}
+
+	result := executor.ExecuteWithHooks(context.Background(), cfg, hooks)
+
+	if !result.Success {
+		t.Fatalf("expected success, got failure: %s", result.Error)
+	}
+	// The prompt should have been modified by the brief injector.
+	if result.Output != "injected: original prompt\n" {
+		t.Errorf("output = %q, want %q", result.Output, "injected: original prompt\n")
+	}
+}
+
+func TestExecuteWithHooks_OnStdoutHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	reporter := &mockReporter{}
+	executor := NewExecutor(testExecutorLogger(), reporter)
+
+	cfg := TaskConfig{
+		TaskID:         "task-hooks-stdout",
+		AgentType:      "custom-agent",
+		Prompt:         "hello world",
+		BinaryPath:     "/bin/echo",
+		WorkspaceMode:  execenv.WorkspaceModeIsolated,
+		WorkspacesRoot: tmpDir,
+		AgentTimeout:   30 * time.Second,
+	}
+
+	var capturedOutput []byte
+	hooks := ExecutionHooks{
+		OnStdout: func(p []byte) {
+			capturedOutput = append(capturedOutput, p...)
+		},
+	}
+
+	result := executor.ExecuteWithHooks(context.Background(), cfg, hooks)
+
+	if !result.Success {
+		t.Fatalf("expected success, got failure: %s", result.Error)
+	}
+	if len(capturedOutput) == 0 {
+		t.Error("expected OnStdout hook to be called with output")
+	}
+	if string(capturedOutput) != "hello world\n" {
+		t.Errorf("captured output = %q, want %q", string(capturedOutput), "hello world\n")
+	}
+}
+
+func TestExecuteWithHooks_StdinProvider(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+
+	// Create a script that reads from stdin and echoes it.
+	script := filepath.Join(tmpDir, "cat_stdin.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nread line\necho \"got: $line\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	reporter := &mockReporter{}
+	executor := NewExecutor(testExecutorLogger(), reporter)
+
+	cfg := TaskConfig{
+		TaskID:         "task-hooks-stdin",
+		AgentType:      "custom-agent",
+		Prompt:         "",
+		BinaryPath:     script,
+		WorkspaceMode:  execenv.WorkspaceModeIsolated,
+		WorkspacesRoot: tmpDir,
+		AgentTimeout:   30 * time.Second,
+	}
+
+	hooks := ExecutionHooks{
+		StdinProvider: func(stdin io.WriteCloser) {
+			// Write to stdin and close it.
+			stdin.Write([]byte("hello from stdin\n"))
+			stdin.Close()
+		},
+	}
+
+	result := executor.ExecuteWithHooks(context.Background(), cfg, hooks)
+
+	if !result.Success {
+		t.Fatalf("expected success, got failure: %s", result.Error)
+	}
+	if result.Output != "got: hello from stdin\n" {
+		t.Errorf("output = %q, want %q", result.Output, "got: hello from stdin\n")
 	}
 }

@@ -38,6 +38,9 @@ type TaskConfig struct {
 	WorkspaceMode execenv.WorkspaceMode
 	WorkspacePath string
 
+	// SystemPrompt is an optional system prompt override (e.g., from brief injection).
+	SystemPrompt string
+
 	// Agent configuration from the task claim response.
 	CustomEnv  map[string]string
 	CustomArgs []string
@@ -69,6 +72,40 @@ func NewExecutor(logger *slog.Logger, reporter Reporter) *Executor {
 	}
 }
 
+// ExecuteWithHooks runs a task through the full execution lifecycle with optional hooks:
+//  1. Apply brief injection hook (if provided)
+//  2. Create execution environment (workspace)
+//  3. Setup workspace directory
+//  4. Spawn agent CLI process with merged env and custom args
+//  5. Stream stdout/stderr as TaskMessageEntry chunks, calling OnStdout/OnStderr hooks
+//  6. Provide stdin pipe via StdinProvider hook (if provided)
+//  7. Handle process completion (exit code 0 = success, non-zero = failure)
+//  8. Report result to server
+//
+// The execution respects the configured agent timeout (defaults to
+// constants.DefaultAgentTimeout if not set in TaskConfig).
+func (e *Executor) ExecuteWithHooks(ctx context.Context, cfg TaskConfig, hooks ExecutionHooks) Result {
+	// Apply brief injection hook if provided.
+	if hooks.BriefInjector != nil {
+		newPrompt, systemPrompt, err := hooks.BriefInjector(cfg.Prompt)
+		if err != nil {
+			e.logger.Warn("brief injection failed", "error", err)
+		} else {
+			cfg.Prompt = newPrompt
+			if systemPrompt != "" {
+				cfg.SystemPrompt = systemPrompt
+			}
+		}
+	}
+
+	// If stdin pipe is requested, use ExecuteWithStdin path.
+	if hooks.StdinProvider != nil {
+		return e.executeWithStdinAndHooks(ctx, cfg, hooks)
+	}
+
+	return e.executeInternal(ctx, cfg, hooks)
+}
+
 // Execute runs a task through the full execution lifecycle:
 //  1. Create execution environment (workspace)
 //  2. Setup workspace directory
@@ -80,6 +117,11 @@ func NewExecutor(logger *slog.Logger, reporter Reporter) *Executor {
 // The execution respects the configured agent timeout (defaults to
 // constants.DefaultAgentTimeout if not set in TaskConfig).
 func (e *Executor) Execute(ctx context.Context, cfg TaskConfig) Result {
+	return e.executeInternal(ctx, cfg, ExecutionHooks{})
+}
+
+// executeInternal is the core execution logic shared by Execute and ExecuteWithHooks.
+func (e *Executor) executeInternal(ctx context.Context, cfg TaskConfig, hooks ExecutionHooks) Result {
 	taskLogger := e.logger.With("task_id", cfg.TaskID, "agent_type", cfg.AgentType)
 
 	// Resolve timeout.
@@ -116,6 +158,11 @@ func (e *Executor) Execute(ctx context.Context, cfg TaskConfig) Result {
 		return Result{ExitCode: -1, Error: err.Error(), Success: false}
 	}
 
+	// Apply system prompt if provided (e.g., from brief injection).
+	if cfg.SystemPrompt != "" {
+		env.SystemPrompt = cfg.SystemPrompt
+	}
+
 	// Setup workspace.
 	if err := env.Setup(); err != nil {
 		taskLogger.Error("workspace setup failed", "error", err)
@@ -128,24 +175,25 @@ func (e *Executor) Execute(ctx context.Context, cfg TaskConfig) Result {
 	stdoutBuf := &truncatingBuffer{maxBytes: maxStdoutBytes}
 	stderrBuf := &tailBuffer{maxChars: maxStderrChars}
 
+	// Create backpressure buffer and flusher for non-blocking streaming.
+	buffer := NewBackpressureBuffer(100, 1*1024*1024)
+	flusher := NewFlusher(buffer, e.reporter, cfg.TaskID, taskLogger)
+	flusher.Run(ctx)
+
 	stdoutWriter := &streamingWriter{
 		inner:    stdoutBuf,
-		reporter: e.reporter,
-		ctx:      ctx,
-		taskID:   cfg.TaskID,
+		buffer:   buffer,
 		stream:   "stdout",
 		sequence: &sequence,
-		logger:   taskLogger,
+		onWrite:  hooks.OnStdout,
 	}
 
 	stderrWriter := &streamingWriter{
 		inner:    stderrBuf,
-		reporter: e.reporter,
-		ctx:      ctx,
-		taskID:   cfg.TaskID,
+		buffer:   buffer,
 		stream:   "stderr",
 		sequence: &sequence,
-		logger:   taskLogger,
+		onWrite:  hooks.OnStderr,
 	}
 
 	// Run the agent process with timeout.
@@ -153,6 +201,9 @@ func (e *Executor) Execute(ctx context.Context, cfg TaskConfig) Result {
 	defer taskCancel()
 
 	exitCode, runErr := env.Run(taskCtx, stdoutWriter, stderrWriter)
+
+	// Stop the flusher to drain remaining buffered messages before reporting.
+	flusher.Stop()
 
 	// Determine outcome.
 	stdout := stdoutBuf.String()
@@ -247,24 +298,23 @@ func (e *Executor) ExecuteWithStdin(ctx context.Context, cfg TaskConfig) (io.Wri
 	stdoutBuf := &truncatingBuffer{maxBytes: maxStdoutBytes}
 	stderrBuf := &tailBuffer{maxChars: maxStderrChars}
 
+	// Create backpressure buffer and flusher for non-blocking streaming.
+	buffer := NewBackpressureBuffer(100, 1*1024*1024)
+	flusher := NewFlusher(buffer, e.reporter, cfg.TaskID, taskLogger)
+	flusher.Run(ctx)
+
 	stdoutWriter := &streamingWriter{
 		inner:    stdoutBuf,
-		reporter: e.reporter,
-		ctx:      ctx,
-		taskID:   cfg.TaskID,
+		buffer:   buffer,
 		stream:   "stdout",
 		sequence: &sequence,
-		logger:   taskLogger,
 	}
 
 	stderrWriter := &streamingWriter{
 		inner:    stderrBuf,
-		reporter: e.reporter,
-		ctx:      ctx,
-		taskID:   cfg.TaskID,
+		buffer:   buffer,
 		stream:   "stderr",
 		sequence: &sequence,
-		logger:   taskLogger,
 	}
 
 	// Run with stdin pipe and timeout.
@@ -273,6 +323,7 @@ func (e *Executor) ExecuteWithStdin(ctx context.Context, cfg TaskConfig) (io.Wri
 	stdinPipe, envDone, startErr := env.RunWithStdin(taskCtx, stdoutWriter, stderrWriter)
 	if startErr != nil {
 		taskCancel()
+		flusher.Stop()
 		return nil, nil, fmt.Errorf("failed to start agent process: %w", startErr)
 	}
 
@@ -281,6 +332,9 @@ func (e *Executor) ExecuteWithStdin(ctx context.Context, cfg TaskConfig) (io.Wri
 	go func() {
 		defer taskCancel()
 		envResult := <-envDone
+
+		// Stop the flusher to drain remaining buffered messages before reporting.
+		flusher.Stop()
 
 		stdout := stdoutBuf.String()
 		stderr := stderrBuf.String()
@@ -306,6 +360,149 @@ func (e *Executor) ExecuteWithStdin(ctx context.Context, cfg TaskConfig) (io.Wri
 	}()
 
 	return stdinPipe, resultCh, nil
+}
+
+// executeWithStdinAndHooks runs a task with stdin pipe support and hooks.
+// It spawns the process, provides the stdin pipe via the StdinProvider hook,
+// waits for completion, and reports the result.
+func (e *Executor) executeWithStdinAndHooks(ctx context.Context, cfg TaskConfig, hooks ExecutionHooks) Result {
+	taskLogger := e.logger.With("task_id", cfg.TaskID, "agent_type", cfg.AgentType)
+
+	// Resolve timeout.
+	timeout := cfg.AgentTimeout
+	if timeout == 0 {
+		timeout = constants.DefaultAgentTimeout
+	}
+
+	// Merge environment variables.
+	mergedEnv := execenv.MergeEnv(nil, cfg.CustomEnv, nil, taskLogger)
+
+	// Create the execution environment.
+	task := execenv.Task{
+		ID:            cfg.TaskID,
+		AgentType:     cfg.AgentType,
+		Prompt:        cfg.Prompt,
+		Model:         cfg.Model,
+		ArgsTemplate:  cfg.ArgsTemplate,
+		EnvVars:       mergedEnv,
+		CustomArgs:    cfg.CustomArgs,
+		WorkspaceMode: cfg.WorkspaceMode,
+		WorkspacePath: cfg.WorkspacePath,
+	}
+
+	execCfg := execenv.Config{
+		WorkspacesRoot: cfg.WorkspacesRoot,
+		AgentTimeout:   timeout,
+	}
+
+	env, err := execenv.NewExecEnv(task, execCfg, cfg.BinaryPath, taskLogger)
+	if err != nil {
+		taskLogger.Error("failed to create exec environment", "error", err)
+		e.reportFailure(ctx, cfg.TaskID, fmt.Sprintf("failed to create exec environment: %v", err), -1)
+		return Result{ExitCode: -1, Error: err.Error(), Success: false}
+	}
+
+	// Apply system prompt if provided (e.g., from brief injection).
+	if cfg.SystemPrompt != "" {
+		env.SystemPrompt = cfg.SystemPrompt
+	}
+
+	// Setup workspace.
+	if err := env.Setup(); err != nil {
+		taskLogger.Error("workspace setup failed", "error", err)
+		e.reportFailure(ctx, cfg.TaskID, fmt.Sprintf("workspace setup failed: %v", err), -1)
+		return Result{ExitCode: -1, Error: err.Error(), Success: false}
+	}
+
+	// Create streaming writers with hooks.
+	var sequence atomic.Int32
+	stdoutBuf := &truncatingBuffer{maxBytes: maxStdoutBytes}
+	stderrBuf := &tailBuffer{maxChars: maxStderrChars}
+
+	// Create backpressure buffer and flusher for non-blocking streaming.
+	buffer := NewBackpressureBuffer(100, 1*1024*1024)
+	flusher := NewFlusher(buffer, e.reporter, cfg.TaskID, taskLogger)
+	flusher.Run(ctx)
+
+	stdoutWriter := &streamingWriter{
+		inner:    stdoutBuf,
+		buffer:   buffer,
+		stream:   "stdout",
+		sequence: &sequence,
+		onWrite:  hooks.OnStdout,
+	}
+
+	stderrWriter := &streamingWriter{
+		inner:    stderrBuf,
+		buffer:   buffer,
+		stream:   "stderr",
+		sequence: &sequence,
+		onWrite:  hooks.OnStderr,
+	}
+
+	// Run with stdin pipe and timeout.
+	taskCtx, taskCancel := context.WithTimeout(ctx, timeout)
+	defer taskCancel()
+
+	stdinPipe, envDone, startErr := env.RunWithStdin(taskCtx, stdoutWriter, stderrWriter)
+	if startErr != nil {
+		flusher.Stop()
+		taskLogger.Error("failed to start agent process", "error", startErr)
+		e.reportFailure(ctx, cfg.TaskID, fmt.Sprintf("failed to start agent process: %v", startErr), -1)
+		return Result{ExitCode: -1, Error: startErr.Error(), Success: false}
+	}
+
+	// Provide the stdin pipe to the caller via the hook.
+	if hooks.StdinProvider != nil {
+		hooks.StdinProvider(stdinPipe)
+	}
+
+	// Wait for the process to complete.
+	envResult := <-envDone
+
+	// Stop the flusher to drain remaining buffered messages before reporting.
+	flusher.Stop()
+
+	stdout := stdoutBuf.String()
+	stderr := stderrBuf.String()
+
+	if taskCtx.Err() == context.DeadlineExceeded {
+		taskLogger.Warn("task timed out", "timeout", timeout)
+		errMsg := fmt.Sprintf("task timed out after %s", timeout)
+		if stderr != "" {
+			errMsg += "\nstderr: " + stderr
+		}
+		e.reportFailure(ctx, cfg.TaskID, errMsg, envResult.ExitCode)
+		return Result{ExitCode: envResult.ExitCode, Output: stdout, Error: errMsg, Success: false}
+	}
+
+	if envResult.Err != nil && ctx.Err() != nil {
+		taskLogger.Info("task interrupted by daemon shutdown")
+		return Result{ExitCode: envResult.ExitCode, Output: stdout, Error: "interrupted", Success: false}
+	}
+
+	if envResult.ExitCode == 0 && envResult.Err == nil {
+		taskLogger.Info("task completed successfully")
+		if e.reporter != nil {
+			req := api.TaskCompleteRequest{
+				Output:   stdout,
+				ExitCode: int32(envResult.ExitCode),
+			}
+			if err := e.reporter.CompleteTask(ctx, cfg.TaskID, req); err != nil {
+				taskLogger.Warn("failed to report task completion", "error", err)
+			}
+		}
+		return Result{ExitCode: envResult.ExitCode, Output: stdout, Success: true}
+	}
+
+	// Failure.
+	taskLogger.Info("task failed", "exit_code", envResult.ExitCode, "error", envResult.Err)
+	errMsg := stderr
+	if errMsg == "" && envResult.Err != nil {
+		errMsg = envResult.Err.Error()
+	}
+	e.reportFailure(ctx, cfg.TaskID, errMsg, envResult.ExitCode)
+	return Result{ExitCode: envResult.ExitCode, Output: stdout, Error: errMsg, Success: false}
 }
 
 // reportFailure reports a task failure to the server.

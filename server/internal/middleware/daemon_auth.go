@@ -9,6 +9,8 @@ import (
 
 	"github.com/agenticflow/agenticflow/server/internal/auth"
 	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/shared/httputil"
+	"github.com/agenticflow/agenticflow/shared/pgutil"
 )
 
 // Daemon context keys.
@@ -46,21 +48,24 @@ func WithDaemonContext(ctx context.Context, userID, daemonID string) context.Con
 // The daemon ID is extracted from the X-Daemon-ID header which the daemon
 // includes in every request.
 //
+// The pool parameter is used for bounded asynchronous last_used_at updates.
+// If pool is nil, the update is skipped.
+//
 // Returns HTTP 401 for missing, malformed, or expired tokens.
-func DaemonAuth(queries *db.Queries, cache *PATCache) func(http.Handler) http.Handler {
+func DaemonAuth(queries *db.Queries, cache *PATCache, pool *TokenUpdatePool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString := extractBearerToken(r)
 			if tokenString == "" {
 				slog.Debug("daemon_auth: missing authorization header", "path", r.URL.Path)
-				writeJSON(w, http.StatusUnauthorized, `{"error":"missing authorization"}`)
+				httputil.WriteErrorJSON(w, http.StatusUnauthorized, "missing authorization")
 				return
 			}
 
 			// Only accept tokens with the af_ prefix.
 			if !strings.HasPrefix(tokenString, auth.PATPrefix) {
 				slog.Debug("daemon_auth: invalid token prefix", "path", r.URL.Path)
-				writeJSON(w, http.StatusUnauthorized, `{"error":"invalid token"}`)
+				httputil.WriteErrorJSON(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
 
@@ -78,11 +83,11 @@ func DaemonAuth(queries *db.Queries, cache *PATCache) func(http.Handler) http.Ha
 			pat, err := queries.GetTokenByHash(r.Context(), hash)
 			if err != nil {
 				slog.Warn("daemon_auth: invalid PAT", "path", r.URL.Path, "error", err)
-				writeJSON(w, http.StatusUnauthorized, `{"error":"invalid or expired token"}`)
+				httputil.WriteErrorJSON(w, http.StatusUnauthorized, "invalid or expired token")
 				return
 			}
 
-			userID := pgUUIDToString(pat.UserID)
+			userID := pgutil.UUIDToString(pat.UserID)
 
 			// Cache the result with appropriate TTL.
 			var expiresAt time.Time
@@ -91,10 +96,15 @@ func DaemonAuth(queries *db.Queries, cache *PATCache) func(http.Handler) http.Ha
 			}
 			cache.Set(hash, userID, TTLForExpiry(time.Now(), expiresAt))
 
-			// Update last_used_at asynchronously.
-			go func() {
-				_ = queries.UpdateTokenLastUsed(context.Background(), pat.ID)
-			}()
+			// Update last_used_at asynchronously via bounded worker pool.
+			if pool != nil {
+				patID := pat.ID
+				pool.Submit(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = queries.UpdateTokenLastUsed(ctx, patID)
+				})
+			}
 
 			daemonID := r.Header.Get("X-Daemon-ID")
 			ctx := WithDaemonContext(r.Context(), userID, daemonID)

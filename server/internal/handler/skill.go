@@ -34,11 +34,11 @@ var skillNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // SkillHandler holds dependencies for skill CRUD HTTP handlers.
 type SkillHandler struct {
-	Queries *db.Queries
+	Queries db.Querier
 }
 
 // NewSkillHandler creates a new SkillHandler.
-func NewSkillHandler(queries *db.Queries) *SkillHandler {
+func NewSkillHandler(queries db.Querier) *SkillHandler {
 	return &SkillHandler{Queries: queries}
 }
 

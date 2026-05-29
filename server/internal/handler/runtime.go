@@ -13,11 +13,11 @@ import (
 
 // RuntimeHandler holds dependencies for runtime-related HTTP handlers.
 type RuntimeHandler struct {
-	Queries *db.Queries
+	Queries db.Querier
 }
 
 // NewRuntimeHandler creates a new RuntimeHandler.
-func NewRuntimeHandler(queries *db.Queries) *RuntimeHandler {
+func NewRuntimeHandler(queries db.Querier) *RuntimeHandler {
 	return &RuntimeHandler{Queries: queries}
 }
 

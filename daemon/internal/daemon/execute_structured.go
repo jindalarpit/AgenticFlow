@@ -213,15 +213,6 @@ func formatStructuredContent(m TaskMessageData) string {
 	}
 }
 
-func isStructuredBackendSupported(agentType string) bool {
-	for _, t := range agent.SupportedTypes() {
-		if t == agentType {
-			return true
-		}
-	}
-	return false
-}
-
 func (d *Daemon) reportTokenUsage(ctx context.Context, taskID string, usage map[string]agent.TokenUsage, logger *slog.Logger) {
 	type usageEntry struct {
 		Model            string `json:"model"`

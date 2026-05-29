@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { wsClient, type ConnectionStatus } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
+import type { ConnectionStatus } from "../lib/ws";
 import { hasToken } from "../lib/api";
 
 /**
@@ -7,9 +8,10 @@ import { hasToken } from "../lib/api";
  * - Connects on mount when authenticated
  * - Disconnects on unmount
  * - Returns the current connection status
- * - Auto-reconnects at 5s intervals (handled by wsClient internally)
+ * - Auto-reconnects at 5s intervals (handled by WebSocketClient internally)
  */
 export function useWebSocket() {
+  const wsClient = useWSClient();
   const [status, setStatus] = useState<ConnectionStatus>(wsClient.status);
 
   useEffect(() => {
@@ -35,7 +37,7 @@ export function useWebSocket() {
       unsubscribe();
       wsClient.disconnect();
     };
-  }, []);
+  }, [wsClient]);
 
   return { status };
 }

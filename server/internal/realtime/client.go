@@ -48,6 +48,18 @@ type Client struct {
 	hub *Hub
 }
 
+// SetSendChan sets the send channel for the client.
+// This is primarily used for testing from external packages.
+func (c *Client) SetSendChan(ch chan []byte) {
+	c.send = ch
+}
+
+// SendChan returns the send channel for reading messages sent to this client.
+// This is primarily used for testing from external packages.
+func (c *Client) SendChan() <-chan []byte {
+	return c.send
+}
+
 // readPump pumps messages from the WebSocket connection to the hub.
 // It runs in its own goroutine and handles connection close detection.
 func (c *Client) readPump() {
@@ -147,28 +159,25 @@ type TokenValidator interface {
 	ValidateToken(token string) (userID string, isDaemon bool, daemonID string, ok bool)
 }
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// In production, restrict origins. For now, allow all for development.
-		return true
-	},
+// extractTokenFromProtocol extracts a bearer token from the Sec-WebSocket-Protocol
+// header. The client sends the token as a sub-protocol with the prefix "access_token.".
+// Returns the raw token string (without prefix) or empty string if not found.
+func extractTokenFromProtocol(r *http.Request) string {
+	protocols := websocket.Subprotocols(r)
+	for _, p := range protocols {
+		if strings.HasPrefix(p, "access_token.") {
+			return strings.TrimPrefix(p, "access_token.")
+		}
+	}
+	return ""
 }
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket, authenticates the client,
-// and registers it with the hub. Authentication is done via:
-// 1. "token" query parameter
-// 2. "Authorization: Bearer <token>" header
+// and registers it with the hub. Authentication is done via the Sec-WebSocket-Protocol
+// header with an "access_token.<token>" sub-protocol value.
 func HandleWebSocket(hub *Hub, validator TokenValidator, w http.ResponseWriter, r *http.Request) {
-	// Extract token from query param or Authorization header.
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		}
-	}
+	// Extract token from Sec-WebSocket-Protocol header.
+	token := extractTokenFromProtocol(r)
 
 	if token == "" {
 		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
@@ -180,6 +189,17 @@ func HandleWebSocket(hub *Hub, validator TokenValidator, w http.ResponseWriter, 
 	if !ok {
 		http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 		return
+	}
+
+	// Build the upgrader with the matched sub-protocol echoed back to complete the handshake.
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		Subprotocols:    []string{"access_token." + token},
+		CheckOrigin: func(r *http.Request) bool {
+			// In production, restrict origins. For now, allow all for development.
+			return true
+		},
 	}
 
 	// Upgrade to WebSocket.

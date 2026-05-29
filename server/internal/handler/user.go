@@ -27,13 +27,13 @@ const maxPromptLength = 32000
 
 // UserHandler holds dependencies for user-facing API handlers.
 type UserHandler struct {
-	Queries            *db.Queries
+	Queries            db.Querier
 	Hub                *realtime.Hub
 	AgentStatusService *service.AgentStatusService
 }
 
 // NewUserHandler creates a new UserHandler.
-func NewUserHandler(queries *db.Queries, hub *realtime.Hub) *UserHandler {
+func NewUserHandler(queries db.Querier, hub *realtime.Hub) *UserHandler {
 	return &UserHandler{Queries: queries, Hub: hub}
 }
 

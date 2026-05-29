@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/migrate"
 	"github.com/agenticflow/agenticflow/server/internal/realtime"
 )
 
@@ -59,17 +62,34 @@ func main() {
 	}
 	slog.Info("connected to database")
 
-	// Run migrations (placeholder — will be wired to golang-migrate).
-	slog.Info("migrations: skipped (placeholder)")
+	// Run database migrations before accepting traffic.
+	if err := migrate.Run(dbURL, "migrations/"); err != nil {
+		slog.Error("migration failed", "error", err)
+		os.Exit(1)
+	}
 
 	// Create WebSocket hub.
 	hub := realtime.NewHub()
-	hubCtx, hubCancel := context.WithCancel(context.Background())
-	defer hubCancel()
-	go hub.Run(hubCtx)
 
-	// Build router.
-	r := NewRouter(pool, hub)
+	// Background context for all background goroutines.
+	// Cancelling this signals all background work to stop.
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+
+	// WaitGroup tracks all background goroutines for graceful shutdown.
+	var wg sync.WaitGroup
+
+	// Start hub run loop, tracked by WaitGroup.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hub.Run(bgCtx)
+	}()
+
+	// Create bounded worker pool for async token last_used_at updates (10 workers).
+	tokenPool := middleware.NewTokenUpdatePool(10)
+
+	// Build router. Pass bgCtx so AgentStatusService can use it for reconciliation goroutines.
+	r := NewRouter(pool, hub, tokenPool, bgCtx, &wg)
 
 	// Start HTTP server.
 	srv := &http.Server{
@@ -98,11 +118,29 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server forced to shutdown", "error", err)
-		os.Exit(1)
 	}
 
-	// Stop the WebSocket hub.
-	hubCancel()
+	// Cancel background context to signal all background goroutines to stop.
+	bgCancel()
+
+	// Drain the token update worker pool within the grace period.
+	tokenPool.Shutdown(25 * time.Second)
+
+	// Wait for all background goroutines (hub, reconciliation) with a 30s timeout.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		slog.Info("all background goroutines stopped")
+	case <-time.After(30 * time.Second):
+		slog.Warn("forced shutdown: background goroutines did not stop within 30s grace period",
+			"stuck_goroutines", "hub_run_loop,reconciliation_goroutines")
+		os.Exit(1)
+	}
 
 	slog.Info("server stopped")
 }

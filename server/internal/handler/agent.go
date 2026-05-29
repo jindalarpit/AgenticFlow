@@ -2,51 +2,31 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
-	"log/slog"
 	"net/http"
-	"regexp"
 	"time"
-	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/agenticflow/agenticflow/server/internal/middleware"
 	"github.com/agenticflow/agenticflow/server/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/service"
 	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
-// Validation constants for agent fields.
-const (
-	maxAgentNameLength        = 64
-	maxAgentDescriptionLength = 255
-	maxAgentInstructionsLength = 50000
-	maxAgentModelLength       = 100
-	maxCustomEnvPairs         = 20
-	maxCustomEnvKeyLength     = 64
-	maxCustomEnvValueLength   = 1024
-	maxCustomArgs             = 20
-	maxCustomArgLength        = 256
-	minConcurrentTasks        = 1
-	maxConcurrentTasks        = 20
-)
-
-// agentNameRegex validates agent names: starts with alphanumeric,
-// followed by alphanumeric, hyphens, or underscores. 1-64 chars total.
-var agentNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
-
 // AgentHandler holds dependencies for agent CRUD HTTP handlers.
 type AgentHandler struct {
-	Queries *db.Queries
+	Queries db.Querier
 	Hub     *realtime.Hub
+	Service *service.AgentService
 }
 
 // NewAgentHandler creates a new AgentHandler.
-func NewAgentHandler(queries *db.Queries, hub *realtime.Hub) *AgentHandler {
-	return &AgentHandler{Queries: queries, Hub: hub}
+func NewAgentHandler(queries db.Querier, hub *realtime.Hub) *AgentHandler {
+	return &AgentHandler{
+		Queries: queries,
+		Hub:     hub,
+		Service: service.NewAgentService(queries, hub),
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -152,194 +132,26 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Validate name ---
-	if req.Name == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	if !agentNameRegex.MatchString(req.Name) {
-		writeErrorJSON(w, http.StatusBadRequest,
-			"name must start with an alphanumeric character and contain only alphanumeric characters, hyphens, and underscores (1-64 characters)")
-		return
-	}
-
-	// --- Validate description ---
-	if utf8.RuneCountInString(req.Description) > maxAgentDescriptionLength {
-		writeErrorJSON(w, http.StatusBadRequest,
-			fmt.Sprintf("description must be %d characters or fewer", maxAgentDescriptionLength))
-		return
-	}
-
-	// --- Validate instructions ---
-	if utf8.RuneCountInString(req.Instructions) > maxAgentInstructionsLength {
-		writeErrorJSON(w, http.StatusBadRequest,
-			fmt.Sprintf("instructions must be %d characters or fewer", maxAgentInstructionsLength))
-		return
-	}
-
-	// --- Validate model ---
-	if utf8.RuneCountInString(req.Model) > maxAgentModelLength {
-		writeErrorJSON(w, http.StatusBadRequest,
-			fmt.Sprintf("model must be %d characters or fewer", maxAgentModelLength))
-		return
-	}
-
-	// --- Validate custom_env ---
-	if len(req.CustomEnv) > maxCustomEnvPairs {
-		writeErrorJSON(w, http.StatusBadRequest,
-			fmt.Sprintf("custom_env must have %d or fewer key-value pairs", maxCustomEnvPairs))
-		return
-	}
-	for key, value := range req.CustomEnv {
-		keyLen := utf8.RuneCountInString(key)
-		if keyLen < 1 || keyLen > maxCustomEnvKeyLength {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("custom_env key must be between 1 and %d characters", maxCustomEnvKeyLength))
-			return
-		}
-		valueLen := utf8.RuneCountInString(value)
-		if valueLen < 1 || valueLen > maxCustomEnvValueLength {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("custom_env value must be between 1 and %d characters", maxCustomEnvValueLength))
-			return
-		}
-	}
-
-	// --- Validate custom_args ---
-	if len(req.CustomArgs) > maxCustomArgs {
-		writeErrorJSON(w, http.StatusBadRequest,
-			fmt.Sprintf("custom_args must have %d or fewer items", maxCustomArgs))
-		return
-	}
-	for _, arg := range req.CustomArgs {
-		if utf8.RuneCountInString(arg) > maxCustomArgLength {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("each custom_args item must be %d characters or fewer", maxCustomArgLength))
-			return
-		}
-	}
-
-	// --- Validate max_concurrent_tasks ---
-	if req.MaxConcurrentTasks == 0 {
-		req.MaxConcurrentTasks = 1 // default
-	}
-	if req.MaxConcurrentTasks < minConcurrentTasks || req.MaxConcurrentTasks > maxConcurrentTasks {
-		writeErrorJSON(w, http.StatusBadRequest,
-			fmt.Sprintf("max_concurrent_tasks must be between %d and %d", minConcurrentTasks, maxConcurrentTasks))
-		return
-	}
-
-	// --- Validate visibility ---
-	if req.Visibility == "" {
-		req.Visibility = "private" // default
-	}
-	if req.Visibility != "private" && req.Visibility != "shared" {
-		writeErrorJSON(w, http.StatusBadRequest,
-			"visibility must be \"private\" or \"shared\"")
-		return
-	}
-
-	// --- Validate mcp_config (if provided) ---
-	var mcpConfigBytes []byte
-	if len(req.MCPConfig) > 0 && string(req.MCPConfig) != "null" {
-		if !json.Valid(req.MCPConfig) {
-			writeErrorJSON(w, http.StatusBadRequest, "mcp_config must be valid JSON")
-			return
-		}
-		mcpConfigBytes = []byte(req.MCPConfig)
-	}
-
-	// --- Validate runtime_id exists ---
-	if req.RuntimeID == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "runtime_id is required")
-		return
-	}
-	runtimeUUID, err := parseUUID(req.RuntimeID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "invalid runtime_id format")
-		return
-	}
-	_, err = h.Queries.GetRuntimeByID(r.Context(), runtimeUUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeErrorJSON(w, http.StatusBadRequest, "runtime_id does not reference an existing runtime")
-			return
-		}
-		slog.Error("create agent: get runtime failed", "runtime_id", req.RuntimeID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to verify runtime")
-		return
-	}
-
-	// --- Reject duplicate names per user ---
-	userUUID, err := parseUUID(userID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "invalid user id")
-		return
-	}
-
-	_, err = h.Queries.GetAgentByName(r.Context(), db.GetAgentByNameParams{
-		UserID: userUUID,
-		Name:   req.Name,
-	})
-	if err == nil {
-		// Agent with this name already exists for this user.
-		writeErrorJSON(w, http.StatusConflict, "an agent with this name already exists")
-		return
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		slog.Error("create agent: check duplicate name failed", "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to check agent name")
-		return
-	}
-
-	// --- Marshal JSON fields ---
-	customEnvJSON, err := json.Marshal(req.CustomEnv)
-	if err != nil {
-		customEnvJSON = []byte("{}")
-	}
-	if req.CustomEnv == nil {
-		customEnvJSON = []byte("{}")
-	}
-
-	customArgsJSON, err := json.Marshal(req.CustomArgs)
-	if err != nil {
-		customArgsJSON = []byte("[]")
-	}
-	if req.CustomArgs == nil {
-		customArgsJSON = []byte("[]")
-	}
-
-	// --- Create agent ---
-	agent, err := h.Queries.CreateAgent(r.Context(), db.CreateAgentParams{
-		UserID:             userUUID,
+	agent, svcErr := h.Service.Create(r.Context(), service.CreateAgentParams{
+		UserID:             userID,
 		Name:               req.Name,
 		Description:        req.Description,
 		Instructions:       req.Instructions,
-		RuntimeID:          runtimeUUID,
-		Model:              pgtype.Text{String: req.Model, Valid: req.Model != ""},
-		CustomEnv:          customEnvJSON,
-		CustomArgs:         customArgsJSON,
-		MaxConcurrentTasks: req.MaxConcurrentTasks,
+		AvatarURL:          req.AvatarURL,
+		RuntimeID:          req.RuntimeID,
+		CustomEnv:          req.CustomEnv,
+		CustomArgs:         req.CustomArgs,
+		Model:              req.Model,
 		Visibility:         req.Visibility,
-		AvatarUrl:          pgtype.Text{String: ptrToString(req.AvatarURL), Valid: req.AvatarURL != nil},
-		McpConfig:          mcpConfigBytes,
+		MaxConcurrentTasks: req.MaxConcurrentTasks,
+		MCPConfig:          req.MCPConfig,
 	})
-	if err != nil {
-		slog.Error("create agent: insert failed", "user_id", userID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to create agent")
+	if svcErr != nil {
+		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
 		return
 	}
 
-	slog.Info("agent created", "agent_id", uuidToString(agent.ID), "name", agent.Name, "user_id", userID)
-
-	resp := toAgentResponse(agent)
-
-	// Broadcast agent_created event via WebSocket.
-	if h.Hub != nil {
-		h.Hub.BroadcastAgentCreated(resp)
-	}
-
-	writeJSON(w, http.StatusCreated, resp)
+	writeJSON(w, http.StatusCreated, toAgentResponse(agent))
 }
 
 // ---------------------------------------------------------------------------
@@ -356,16 +168,9 @@ func (h *AgentHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userUUID, err := parseUUID(userID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "invalid user id")
-		return
-	}
-
-	agents, err := h.Queries.ListAgentsByUser(r.Context(), userUUID)
-	if err != nil {
-		slog.Error("list agents: query failed", "user_id", userID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to list agents")
+	agents, svcErr := h.Service.List(r.Context(), userID)
+	if svcErr != nil {
+		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
 		return
 	}
 
@@ -424,20 +229,9 @@ func (h *AgentHandler) GetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentUUID, err := parseUUID(agentID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "invalid agent id format")
-		return
-	}
-
-	agent, err := h.Queries.GetAgent(r.Context(), agentUUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeErrorJSON(w, http.StatusNotFound, "agent not found")
-			return
-		}
-		slog.Error("get agent: query failed", "agent_id", agentID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to get agent")
+	agent, svcErr := h.Service.Get(r.Context(), agentID)
+	if svcErr != nil {
+		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
 		return
 	}
 
@@ -465,18 +259,6 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentUUID, err := parseUUID(agentID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "invalid agent id format")
-		return
-	}
-
-	userUUID, err := parseUUID(userID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "invalid user id")
-		return
-	}
-
 	var req UpdateAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "invalid request body")
@@ -484,215 +266,30 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine if mcp_config was explicitly present in the request body.
-	// json.RawMessage is nil when the field is absent from JSON,
-	// and contains the literal bytes "null" when explicitly set to null.
 	mcpConfigPresent := req.MCPConfig != nil
 
-	// --- Validate name (if provided) ---
-	if req.Name != nil {
-		if *req.Name == "" {
-			writeErrorJSON(w, http.StatusBadRequest, "name is required")
-			return
-		}
-		if !agentNameRegex.MatchString(*req.Name) {
-			writeErrorJSON(w, http.StatusBadRequest,
-				"name must start with an alphanumeric character and contain only alphanumeric characters, hyphens, and underscores (1-64 characters)")
-			return
-		}
-	}
-
-	// --- Validate description (if provided) ---
-	if req.Description != nil {
-		if utf8.RuneCountInString(*req.Description) > maxAgentDescriptionLength {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("description must be %d characters or fewer", maxAgentDescriptionLength))
-			return
-		}
-	}
-
-	// --- Validate instructions (if provided) ---
-	if req.Instructions != nil {
-		if utf8.RuneCountInString(*req.Instructions) > maxAgentInstructionsLength {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("instructions must be %d characters or fewer", maxAgentInstructionsLength))
-			return
-		}
-	}
-
-	// --- Validate model (if provided) ---
-	if req.Model != nil {
-		if utf8.RuneCountInString(*req.Model) > maxAgentModelLength {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("model must be %d characters or fewer", maxAgentModelLength))
-			return
-		}
-	}
-
-	// --- Validate custom_env (if provided) ---
-	if req.CustomEnv != nil {
-		if len(*req.CustomEnv) > maxCustomEnvPairs {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("custom_env must have %d or fewer key-value pairs", maxCustomEnvPairs))
-			return
-		}
-		for key, value := range *req.CustomEnv {
-			keyLen := utf8.RuneCountInString(key)
-			if keyLen < 1 || keyLen > maxCustomEnvKeyLength {
-				writeErrorJSON(w, http.StatusBadRequest,
-					fmt.Sprintf("custom_env key must be between 1 and %d characters", maxCustomEnvKeyLength))
-				return
-			}
-			valueLen := utf8.RuneCountInString(value)
-			if valueLen < 1 || valueLen > maxCustomEnvValueLength {
-				writeErrorJSON(w, http.StatusBadRequest,
-					fmt.Sprintf("custom_env value must be between 1 and %d characters", maxCustomEnvValueLength))
-				return
-			}
-		}
-	}
-
-	// --- Validate custom_args (if provided) ---
-	if req.CustomArgs != nil {
-		if len(*req.CustomArgs) > maxCustomArgs {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("custom_args must have %d or fewer items", maxCustomArgs))
-			return
-		}
-		for _, arg := range *req.CustomArgs {
-			if utf8.RuneCountInString(arg) > maxCustomArgLength {
-				writeErrorJSON(w, http.StatusBadRequest,
-					fmt.Sprintf("each custom_args item must be %d characters or fewer", maxCustomArgLength))
-				return
-			}
-		}
-	}
-
-	// --- Validate max_concurrent_tasks (if provided) ---
-	if req.MaxConcurrentTasks != nil {
-		if *req.MaxConcurrentTasks < minConcurrentTasks || *req.MaxConcurrentTasks > maxConcurrentTasks {
-			writeErrorJSON(w, http.StatusBadRequest,
-				fmt.Sprintf("max_concurrent_tasks must be between %d and %d", minConcurrentTasks, maxConcurrentTasks))
-			return
-		}
-	}
-
-	// --- Validate visibility (if provided) ---
-	if req.Visibility != nil {
-		if *req.Visibility != "private" && *req.Visibility != "shared" {
-			writeErrorJSON(w, http.StatusBadRequest,
-				"visibility must be \"private\" or \"shared\"")
-			return
-		}
-	}
-
-	// --- Validate runtime_id (if provided) ---
-	var runtimeUUID pgtype.UUID
-	if req.RuntimeID != nil {
-		if *req.RuntimeID == "" {
-			writeErrorJSON(w, http.StatusBadRequest, "runtime_id cannot be empty")
-			return
-		}
-		var err error
-		runtimeUUID, err = parseUUID(*req.RuntimeID)
-		if err != nil {
-			writeErrorJSON(w, http.StatusBadRequest, "invalid runtime_id format")
-			return
-		}
-		_, err = h.Queries.GetRuntimeByID(r.Context(), runtimeUUID)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeErrorJSON(w, http.StatusBadRequest, "runtime_id does not reference an existing runtime")
-				return
-			}
-			slog.Error("update agent: get runtime failed", "runtime_id", *req.RuntimeID, "error", err)
-			writeErrorJSON(w, http.StatusInternalServerError, "failed to verify runtime")
-			return
-		}
-	}
-
-	// --- Build update params (COALESCE-based: nil = keep existing) ---
-	params := db.UpdateAgentParams{
-		ID:     agentUUID,
-		UserID: userUUID,
-	}
-
-	if req.Name != nil {
-		params.Name = pgtype.Text{String: *req.Name, Valid: true}
-	}
-	if req.Description != nil {
-		params.Description = pgtype.Text{String: *req.Description, Valid: true}
-	}
-	if req.Instructions != nil {
-		params.Instructions = pgtype.Text{String: *req.Instructions, Valid: true}
-	}
-	if req.RuntimeID != nil {
-		params.RuntimeID = runtimeUUID
-	}
-	if req.Model != nil {
-		params.Model = pgtype.Text{String: *req.Model, Valid: true}
-	}
-	if req.CustomEnv != nil {
-		envJSON, err := json.Marshal(*req.CustomEnv)
-		if err != nil {
-			envJSON = []byte("{}")
-		}
-		params.CustomEnv = envJSON
-	}
-	if req.CustomArgs != nil {
-		argsJSON, err := json.Marshal(*req.CustomArgs)
-		if err != nil {
-			argsJSON = []byte("[]")
-		}
-		params.CustomArgs = argsJSON
-	}
-	if req.MaxConcurrentTasks != nil {
-		params.MaxConcurrentTasks = pgtype.Int4{Int32: *req.MaxConcurrentTasks, Valid: true}
-	}
-	if req.Visibility != nil {
-		params.Visibility = pgtype.Text{String: *req.Visibility, Valid: true}
-	}
-	if req.AvatarURL != nil {
-		params.AvatarUrl = pgtype.Text{String: *req.AvatarURL, Valid: true}
-	}
-
-	// --- Handle mcp_config tri-state ---
-	// mcpConfigPresent=false → field omitted → no change (SetMcpConfig=false)
-	// mcpConfigPresent=true, value is "null" → clear (SetMcpConfig=true, McpConfig=nil)
-	// mcpConfigPresent=true, value is JSON object → validate and store
-	if mcpConfigPresent {
-		params.SetMcpConfig = true
-		if string(req.MCPConfig) == "null" {
-			params.McpConfig = nil
-		} else {
-			if !json.Valid(req.MCPConfig) {
-				writeErrorJSON(w, http.StatusBadRequest, "mcp_config must be valid JSON")
-				return
-			}
-			params.McpConfig = []byte(req.MCPConfig)
-		}
-	}
-
-	agent, err := h.Queries.UpdateAgent(r.Context(), params)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeErrorJSON(w, http.StatusNotFound, "agent not found")
-			return
-		}
-		slog.Error("update agent: query failed", "agent_id", agentID, "user_id", userID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to update agent")
+	agent, svcErr := h.Service.Update(r.Context(), service.UpdateAgentParams{
+		UserID:             userID,
+		AgentID:            agentID,
+		Name:               req.Name,
+		Description:        req.Description,
+		Instructions:       req.Instructions,
+		AvatarURL:          req.AvatarURL,
+		RuntimeID:          req.RuntimeID,
+		CustomEnv:          req.CustomEnv,
+		CustomArgs:         req.CustomArgs,
+		Model:              req.Model,
+		Visibility:         req.Visibility,
+		MaxConcurrentTasks: req.MaxConcurrentTasks,
+		MCPConfig:          req.MCPConfig,
+		MCPConfigPresent:   mcpConfigPresent,
+	})
+	if svcErr != nil {
+		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
 		return
 	}
 
-	slog.Info("agent updated", "agent_id", agentID, "user_id", userID)
-
-	resp := toAgentResponse(agent)
-
-	// Broadcast agent_updated event via WebSocket.
-	if h.Hub != nil {
-		h.Hub.BroadcastAgentUpdated(resp)
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, toAgentResponse(agent))
 }
 
 // ---------------------------------------------------------------------------
@@ -716,48 +313,13 @@ func (h *AgentHandler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentUUID, err := parseUUID(agentID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "invalid agent id format")
+	agent, svcErr := h.Service.Restore(r.Context(), agentID)
+	if svcErr != nil {
+		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
 		return
 	}
 
-	// Fetch the agent to validate it exists and is currently archived.
-	agent, err := h.Queries.GetAgent(r.Context(), agentUUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeErrorJSON(w, http.StatusNotFound, "agent not found")
-			return
-		}
-		slog.Error("restore agent: get agent failed", "agent_id", agentID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to get agent")
-		return
-	}
-
-	// Verify the agent is currently archived.
-	if !agent.ArchivedAt.Valid {
-		writeErrorJSON(w, http.StatusConflict, "agent is not archived")
-		return
-	}
-
-	// Restore the agent (set archived_at = NULL).
-	restored, err := h.Queries.RestoreAgent(r.Context(), agentUUID)
-	if err != nil {
-		slog.Error("restore agent: query failed", "agent_id", agentID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to restore agent")
-		return
-	}
-
-	slog.Info("agent restored", "agent_id", agentID, "user_id", userID)
-
-	resp := toAgentResponse(restored)
-
-	// Broadcast agent_updated event via WebSocket.
-	if h.Hub != nil {
-		h.Hub.BroadcastAgentUpdated(resp)
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, toAgentResponse(agent))
 }
 
 // ---------------------------------------------------------------------------
@@ -781,33 +343,10 @@ func (h *AgentHandler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentUUID, err := parseUUID(agentID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "invalid agent id format")
+	svcErr := h.Service.Delete(r.Context(), agentID, userID)
+	if svcErr != nil {
+		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
 		return
-	}
-
-	userUUID, err := parseUUID(userID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "invalid user id")
-		return
-	}
-
-	err = h.Queries.DeleteAgent(r.Context(), db.DeleteAgentParams{
-		ID:     agentUUID,
-		UserID: userUUID,
-	})
-	if err != nil {
-		slog.Error("delete agent: query failed", "agent_id", agentID, "user_id", userID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to delete agent")
-		return
-	}
-
-	slog.Info("agent deleted", "agent_id", agentID, "user_id", userID)
-
-	// Broadcast agent_deleted event via WebSocket.
-	if h.Hub != nil {
-		h.Hub.BroadcastAgentDeleted(agentID)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -834,72 +373,13 @@ func (h *AgentHandler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentUUID, err := parseUUID(agentID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "invalid agent id format")
-		return
-	}
-
-	userUUID, err := parseUUID(userID)
-	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "invalid user id")
-		return
-	}
-
-	// Fetch the agent to validate existence and check permissions.
-	agent, err := h.Queries.GetAgent(r.Context(), agentUUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeErrorJSON(w, http.StatusNotFound, "agent not found")
-			return
-		}
-		slog.Error("archive agent: get agent failed", "agent_id", agentID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to get agent")
-		return
-	}
-
-	// Check if agent is already archived.
-	if agent.ArchivedAt.Valid {
-		writeErrorJSON(w, http.StatusConflict, "agent is already archived")
-		return
-	}
-
-	// Permission check: user must be the agent owner or a workspace admin.
-	// In AgenticFlow's simple model, we treat the owner check as the primary
-	// permission gate. The isAdmin flag allows workspace admins to archive
-	// any agent.
-	isOwner := uuidToString(agent.UserID) == userID
 	isAdmin := middleware.ContextIsAdmin(r.Context())
 
-	if !isOwner && !isAdmin {
-		writeErrorJSON(w, http.StatusForbidden, "you do not have permission to archive this agent")
+	agent, svcErr := h.Service.Archive(r.Context(), agentID, userID, isAdmin)
+	if svcErr != nil {
+		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
 		return
 	}
 
-	// Perform the archive.
-	archived, err := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
-		ID:      agentUUID,
-		UserID:  userUUID,
-		IsAdmin: isAdmin,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeErrorJSON(w, http.StatusNotFound, "agent not found")
-			return
-		}
-		slog.Error("archive agent: query failed", "agent_id", agentID, "user_id", userID, "error", err)
-		writeErrorJSON(w, http.StatusInternalServerError, "failed to archive agent")
-		return
-	}
-
-	slog.Info("agent archived", "agent_id", agentID, "user_id", userID)
-
-	resp := toAgentResponse(archived)
-
-	// Broadcast agent_updated event via WebSocket with updated archived_at.
-	if h.Hub != nil {
-		h.Hub.BroadcastAgentUpdated(resp)
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, toAgentResponse(agent))
 }

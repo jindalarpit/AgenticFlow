@@ -70,6 +70,9 @@ func (d *Daemon) HandleWSMessage(msg []byte) {
 			return
 		}
 		d.handleTaskInput(payload.TaskID, payload.Text)
+	case "task_available":
+		d.logger.Debug("received task_available push event")
+		d.TriggerPoll()
 	default:
 		d.logger.Debug("unhandled WS event type", "type", event.Type)
 	}

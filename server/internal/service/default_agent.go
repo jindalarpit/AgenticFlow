@@ -33,7 +33,7 @@ const (
 //  3. Picks the first valid runtime ID from the registration payload
 //  4. Creates the "Nexus" agent with default settings
 //  5. Logs and returns on any DB error (non-blocking)
-func EnsureDefaultAgent(ctx context.Context, queries *db.Queries, userID pgtype.UUID, runtimeIDs map[string]string) {
+func EnsureDefaultAgent(ctx context.Context, queries db.Querier, userID pgtype.UUID, runtimeIDs map[string]string) {
 	userIDStr := uuidToString(userID)
 
 	// Check if the user already has any agents.

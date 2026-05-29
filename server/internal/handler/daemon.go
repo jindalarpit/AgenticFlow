@@ -20,14 +20,14 @@ import (
 
 // DaemonHandler holds dependencies for daemon API handlers.
 type DaemonHandler struct {
-	Queries              *db.Queries
+	Queries              db.Querier
 	Hub                  *realtime.Hub
 	AgentStatusService   *service.AgentStatusService
 	SessionStateManager  *service.SessionStateManager
 }
 
 // NewDaemonHandler creates a new DaemonHandler.
-func NewDaemonHandler(queries *db.Queries, hub *realtime.Hub) *DaemonHandler {
+func NewDaemonHandler(queries db.Querier, hub *realtime.Hub) *DaemonHandler {
 	return &DaemonHandler{Queries: queries, Hub: hub}
 }
 
@@ -1201,8 +1201,3 @@ func (h *DaemonHandler) CompleteStage(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// writeErrorJSON writes a JSON error response.
-func writeErrorJSON(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
-}

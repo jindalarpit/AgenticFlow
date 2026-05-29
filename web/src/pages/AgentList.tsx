@@ -3,12 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useManagedAgents } from "../hooks/useManagedAgents";
 import type { ManagedAgent, AgentStatus } from "../hooks/useManagedAgents";
-import { wsClient } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
 
 export default function AgentList() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: agents, isLoading } = useManagedAgents();
+  const wsClient = useWSClient();
 
   // Real-time updates: listen for agent WebSocket events and invalidate cache
   useEffect(() => {
@@ -31,7 +32,7 @@ export default function AgentList() {
       unsubUpdated();
       unsubDeleted();
     };
-  }, [queryClient]);
+  }, [queryClient, wsClient]);
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">

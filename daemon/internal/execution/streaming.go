@@ -2,9 +2,7 @@ package execution
 
 import (
 	"bytes"
-	"context"
 	"io"
-	"log/slog"
 	"sync/atomic"
 
 	"github.com/agenticflow/agenticflow/shared/api"
@@ -18,34 +16,36 @@ const (
 	maxStderrChars = 4096
 )
 
-// streamingWriter is an io.Writer that sends output chunks to the server
-// as TaskMessageEntry messages while also writing to an inner buffer for
-// final reporting.
+// streamingWriter is an io.Writer that sends output chunks to a BackpressureBuffer
+// for asynchronous delivery to the server, while also writing to an inner buffer
+// for final reporting. Write() returns immediately without blocking regardless of
+// server responsiveness.
 type streamingWriter struct {
 	inner    io.Writer
-	reporter Reporter
-	ctx      context.Context
-	taskID   string
+	buffer   *BackpressureBuffer
 	stream   string // "stdout" or "stderr"
 	sequence *atomic.Int32
-	logger   *slog.Logger
+	onWrite  func([]byte) // optional hook called on each write
 }
 
 func (s *streamingWriter) Write(p []byte) (n int, err error) {
 	// Write to inner buffer first.
 	n, err = s.inner.Write(p)
 
-	// Send to server as a task message (best-effort, don't block on failure).
-	if len(p) > 0 && s.reporter != nil {
+	// Push to backpressure buffer (non-blocking).
+	if len(p) > 0 && s.buffer != nil {
 		seq := s.sequence.Add(1)
 		msg := api.TaskMessageEntry{
 			Sequence: seq,
 			Stream:   s.stream,
 			Content:  string(p),
 		}
-		if reportErr := s.reporter.ReportMessages(s.ctx, s.taskID, []api.TaskMessageEntry{msg}); reportErr != nil {
-			s.logger.Debug("failed to report task message", "error", reportErr)
-		}
+		s.buffer.Push(msg)
+	}
+
+	// Call the output hook if provided.
+	if len(p) > 0 && s.onWrite != nil {
+		s.onWrite(p)
 	}
 
 	return n, err

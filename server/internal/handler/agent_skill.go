@@ -21,14 +21,21 @@ type TxBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
+// QuerierWithTx extends db.Querier with the ability to create a
+// transaction-scoped Querier. Satisfied by *db.Queries.
+type QuerierWithTx interface {
+	db.Querier
+	WithTx(tx pgx.Tx) *db.Queries
+}
+
 // AgentSkillHandler holds dependencies for agent-skill association HTTP handlers.
 type AgentSkillHandler struct {
-	Queries *db.Queries
+	Queries QuerierWithTx
 	Pool    TxBeginner
 }
 
 // NewAgentSkillHandler creates a new AgentSkillHandler.
-func NewAgentSkillHandler(queries *db.Queries, pool TxBeginner) *AgentSkillHandler {
+func NewAgentSkillHandler(queries QuerierWithTx, pool TxBeginner) *AgentSkillHandler {
 	return &AgentSkillHandler{Queries: queries, Pool: pool}
 }
 

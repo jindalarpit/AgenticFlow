@@ -20,32 +20,30 @@ import type { TaskEvent } from "../../../lib/agent-detail-types";
 
 /* ─── Mock wsClient ─── */
 
-vi.mock("../../../lib/ws", () => {
-  const handlers: Map<string, Set<(event: { type: string; payload: unknown }) => void>> = new Map();
-  const statusHandlers: Set<(status: string) => void> = new Set();
+const wsHandlers: Map<string, Set<(event: { type: string; payload: unknown }) => void>> = new Map();
+const wsStatusHandlers: Set<(status: string) => void> = new Set();
 
-  return {
-    wsClient: {
-      on: vi.fn((eventType: string, handler: (event: { type: string; payload: unknown }) => void) => {
-        if (!handlers.has(eventType)) {
-          handlers.set(eventType, new Set());
-        }
-        handlers.get(eventType)!.add(handler);
-        return () => {
-          handlers.get(eventType)?.delete(handler);
-        };
-      }),
-      onStatusChange: vi.fn((handler: (status: string) => void) => {
-        statusHandlers.add(handler);
-        return () => {
-          statusHandlers.delete(handler);
-        };
-      }),
-      __getHandlers: () => handlers,
-      __getStatusHandlers: () => statusHandlers,
-    },
-  };
-});
+const mockWsClient = {
+  on: vi.fn((eventType: string, handler: (event: { type: string; payload: unknown }) => void) => {
+    if (!wsHandlers.has(eventType)) {
+      wsHandlers.set(eventType, new Set());
+    }
+    wsHandlers.get(eventType)!.add(handler);
+    return () => {
+      wsHandlers.get(eventType)?.delete(handler);
+    };
+  }),
+  onStatusChange: vi.fn((handler: (status: string) => void) => {
+    wsStatusHandlers.add(handler);
+    return () => {
+      wsStatusHandlers.delete(handler);
+    };
+  }),
+};
+
+vi.mock("../../../contexts/WebSocketContext", () => ({
+  useWSClient: () => mockWsClient,
+}));
 
 /* ─── Mock apiFetch ─── */
 
@@ -57,7 +55,6 @@ vi.mock("../../../lib/api", () => ({
 
 import { useAgentWebSocket } from "../../../hooks/useAgentWebSocket";
 import { useUpdateAgent } from "../../../hooks/useAgentDetail";
-import { wsClient } from "../../../lib/ws";
 import { apiFetch } from "../../../lib/api";
 import type { Agent } from "../../../lib/agent-detail-types";
 
@@ -69,12 +66,12 @@ const AGENT_ID = "agent-123";
 const OTHER_AGENT_ID = "agent-456";
 
 // Access internal handler maps from the mock
-const getMockWsClient = () => wsClient as unknown as {
-  on: ReturnType<typeof vi.fn>;
-  onStatusChange: ReturnType<typeof vi.fn>;
-  __getHandlers: () => Map<string, Set<(event: { type: string; payload: unknown }) => void>>;
-  __getStatusHandlers: () => Set<(status: string) => void>;
-};
+const getMockWsClient = () => ({
+  on: mockWsClient.on,
+  onStatusChange: mockWsClient.onStatusChange,
+  __getHandlers: () => wsHandlers,
+  __getStatusHandlers: () => wsStatusHandlers,
+});
 
 function createQueryClient() {
   return new QueryClient({

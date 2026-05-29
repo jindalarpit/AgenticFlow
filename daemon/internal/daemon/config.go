@@ -18,6 +18,7 @@ import (
 // variables, config file, and defaults (in that precedence order).
 type Config struct {
 	ServerURL          string
+	Token              string
 	DaemonID           string
 	DeviceName         string
 	CLIVersion         string
@@ -121,6 +122,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 
 	return Config{
 		ServerURL:          serverURL,
+		Token:              fileCfg.Token,
 		DaemonID:           daemonID,
 		DeviceName:         deviceName,
 		CLIVersion:         cliVersion,

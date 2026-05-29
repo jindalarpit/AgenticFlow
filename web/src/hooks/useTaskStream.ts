@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { wsClient, type WSEvent } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
+import type { WSEvent } from "../lib/ws";
 import type { TaskMessage } from "./useTasks";
 
 interface TaskOutputPayload {
@@ -23,6 +24,7 @@ interface TaskOutputPayload {
  * structured format (payload with type/tool/content/input/output fields).
  */
 export function useTaskStream(taskId: string) {
+  const wsClient = useWSClient();
   const [messages, setMessages] = useState<TaskMessage[]>([]);
   const seenSequences = useRef<Set<number>>(new Set());
 
@@ -87,7 +89,7 @@ export function useTaskStream(taskId: string) {
     });
 
     return unsubscribe;
-  }, [taskId]);
+  }, [taskId, wsClient]);
 
   /**
    * Seed the stream with initial messages fetched from the API.

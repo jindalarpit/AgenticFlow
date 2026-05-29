@@ -62,12 +62,14 @@ func (h *Hub) broadcastAgentEvent(eventType string, payload interface{}) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, client := range h.clients {
-		select {
-		case client.send <- data:
-		default:
-			slog.Warn("client send channel full during agent event broadcast",
-				"user_id", client.UserID, "type", eventType)
+	for _, conns := range h.clients {
+		for _, client := range conns {
+			select {
+			case client.send <- data:
+			default:
+				slog.Warn("client send channel full during agent event broadcast",
+					"user_id", client.UserID, "type", eventType)
+			}
 		}
 	}
 

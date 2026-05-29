@@ -15,10 +15,14 @@ type Event struct {
 	UserID  string      `json:"-"` // target user (empty = broadcast to all)
 }
 
+// maxConnectionsPerUser is the maximum number of concurrent WebSocket connections
+// allowed per user. When exceeded, the oldest connection is closed.
+const maxConnectionsPerUser = 5
+
 // Hub manages WebSocket connections and broadcasts events to connected clients and daemons.
 type Hub struct {
-	// clients maps userID -> *Client for user connections.
-	clients map[string]*Client
+	// clients maps userID -> list of *Client for user connections (supports multiple tabs).
+	clients map[string][]*Client
 
 	// daemons maps daemonID -> *Client for daemon connections.
 	daemons map[string]*Client
@@ -39,7 +43,7 @@ type Hub struct {
 // NewHub creates a new Hub instance with initialized channels and maps.
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[string]*Client),
+		clients:    make(map[string][]*Client),
 		daemons:    make(map[string]*Client),
 		broadcast:  make(chan Event, 256),
 		register:   make(chan *Client),
@@ -54,13 +58,15 @@ func (h *Hub) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			h.mu.Lock()
-			for _, client := range h.clients {
-				close(client.send)
+			for _, conns := range h.clients {
+				for _, client := range conns {
+					close(client.send)
+				}
 			}
 			for _, client := range h.daemons {
 				close(client.send)
 			}
-			h.clients = make(map[string]*Client)
+			h.clients = make(map[string][]*Client)
 			h.daemons = make(map[string]*Client)
 			h.mu.Unlock()
 			return
@@ -75,12 +81,16 @@ func (h *Hub) Run(ctx context.Context) {
 				h.daemons[client.ID] = client
 				slog.Info("daemon connected to hub", "daemon_id", client.ID)
 			} else {
-				// If there's an existing user connection, close it.
-				if existing, ok := h.clients[client.UserID]; ok {
-					close(existing.send)
+				conns := h.clients[client.UserID]
+				if len(conns) >= maxConnectionsPerUser {
+					// Close the oldest connection to make room.
+					oldest := conns[0]
+					close(oldest.send)
+					conns = conns[1:]
+					slog.Info("user connection limit reached, closed oldest", "user_id", client.UserID)
 				}
-				h.clients[client.UserID] = client
-				slog.Info("user connected to hub", "user_id", client.UserID)
+				h.clients[client.UserID] = append(conns, client)
+				slog.Info("user connected to hub", "user_id", client.UserID, "connections", len(h.clients[client.UserID]))
 			}
 			h.mu.Unlock()
 
@@ -93,10 +103,19 @@ func (h *Hub) Run(ctx context.Context) {
 					slog.Info("daemon disconnected from hub", "daemon_id", client.ID)
 				}
 			} else {
-				if existing, ok := h.clients[client.UserID]; ok && existing == client {
+				conns := h.clients[client.UserID]
+				for i, c := range conns {
+					if c == client {
+						// Remove this specific connection from the slice.
+						h.clients[client.UserID] = append(conns[:i], conns[i+1:]...)
+						close(client.send)
+						slog.Info("user disconnected from hub", "user_id", client.UserID, "remaining", len(h.clients[client.UserID]))
+						break
+					}
+				}
+				// Clean up empty slices.
+				if len(h.clients[client.UserID]) == 0 {
 					delete(h.clients, client.UserID)
-					close(client.send)
-					slog.Info("user disconnected from hub", "user_id", client.UserID)
 				}
 			}
 			h.mu.Unlock()
@@ -116,7 +135,7 @@ func (h *Hub) Broadcast(event Event) {
 	}
 }
 
-// SendToUser sends an event to a specific user's client connection.
+// SendToUser sends an event to all active connections for a specific user.
 func (h *Hub) SendToUser(userID string, event Event) {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -125,17 +144,15 @@ func (h *Hub) SendToUser(userID string, event Event) {
 	}
 
 	h.mu.RLock()
-	client, ok := h.clients[userID]
+	conns := h.clients[userID]
 	h.mu.RUnlock()
 
-	if !ok {
-		return
-	}
-
-	select {
-	case client.send <- data:
-	default:
-		slog.Warn("user send channel full, dropping message", "user_id", userID, "type", event.Type)
+	for _, client := range conns {
+		select {
+		case client.send <- data:
+		default:
+			slog.Warn("user send channel full, dropping message", "user_id", userID, "type", event.Type)
+		}
 	}
 }
 
@@ -146,6 +163,12 @@ func (h *Hub) IsDaemonConnected(daemonID string) bool {
 	_, ok := h.daemons[daemonID]
 	h.mu.RUnlock()
 	return ok
+}
+
+// Register adds a client to the hub's registration queue.
+// This is primarily used for testing from external packages.
+func (h *Hub) Register(client *Client) {
+	h.register <- client
 }
 
 // SendToDaemon sends an event to a specific daemon's client connection.
@@ -182,11 +205,13 @@ func (h *Hub) broadcastEvent(event Event) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	for _, client := range h.clients {
-		select {
-		case client.send <- data:
-		default:
-			slog.Warn("client send channel full during broadcast", "user_id", client.UserID, "type", event.Type)
+	for _, conns := range h.clients {
+		for _, client := range conns {
+			select {
+			case client.send <- data:
+			default:
+				slog.Warn("client send channel full during broadcast", "user_id", client.UserID, "type", event.Type)
+			}
 		}
 	}
 

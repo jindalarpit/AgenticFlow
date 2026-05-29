@@ -4,16 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agenticflow/agenticflow/server/internal/handler"
@@ -21,6 +20,8 @@ import (
 	"github.com/agenticflow/agenticflow/server/internal/realtime"
 	"github.com/agenticflow/agenticflow/server/internal/service"
 	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
+	"github.com/agenticflow/agenticflow/shared/httputil"
+	"github.com/agenticflow/agenticflow/shared/pgutil"
 )
 
 // defaultOrigins are the allowed CORS origins for local development.
@@ -53,7 +54,7 @@ func allowedOrigins() []string {
 }
 
 // NewRouter creates the fully-configured Chi router with all middleware and routes.
-func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
+func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, tokenPool *middleware.TokenUpdatePool, bgCtx context.Context, wg *sync.WaitGroup) chi.Router {
 	queries := db.New(pool)
 	patCache := middleware.NewPATCache()
 
@@ -64,6 +65,8 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
+	r.Use(middleware.BodyLimit(1 << 20))          // 1 MB default body limit
+	r.Use(middleware.BodyLimitErrorHandler)        // Return JSON 413 on oversized bodies
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   allowedOrigins(),
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -74,7 +77,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 
 	// Health check.
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSONResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	// Auth routes (public).
@@ -90,13 +93,22 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 	})
 
 	// Daemon API routes (require daemon token auth).
-	agentStatusSvc := service.NewAgentStatusService(queries, hub)
+	agentStatusSvc := service.NewAgentStatusService(queries, hub, bgCtx)
+	// Register the AgentStatusService's WaitGroup with the parent WaitGroup
+	// so shutdown waits for all reconciliation goroutines to complete.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Block until bgCtx is cancelled, then wait for reconciliation goroutines.
+		<-bgCtx.Done()
+		agentStatusSvc.Wait()
+	}()
 	sessionStateMgr := service.NewSessionStateManager(hub)
 	daemonH := handler.NewDaemonHandler(queries, hub)
 	daemonH.AgentStatusService = agentStatusSvc
 	daemonH.SessionStateManager = sessionStateMgr
 	r.Route("/api/daemon", func(r chi.Router) {
-		r.Use(middleware.DaemonAuth(queries, patCache))
+		r.Use(middleware.DaemonAuth(queries, patCache, tokenPool))
 
 		r.Post("/register", daemonH.Register)
 		r.Post("/deregister", daemonH.Deregister)
@@ -105,7 +117,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Post("/tasks/{taskId}/start", daemonH.StartTask)
 		r.Post("/tasks/{taskId}/complete", daemonH.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", daemonH.FailTask)
-		r.Post("/tasks/{taskId}/messages", daemonH.ReportTaskMessages)
+		r.With(middleware.BodyLimit(64 << 10)).Post("/tasks/{taskId}/messages", daemonH.ReportTaskMessages) // 64 KB limit
 		r.Post("/tasks/{taskId}/input-state", daemonH.ReportInputState)
 		r.Post("/tasks/{taskId}/stages/{stageName}/complete", daemonH.CompleteStage)
 	})
@@ -119,7 +131,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 	skillH := handler.NewSkillHandler(queries)
 	agentSkillH := handler.NewAgentSkillHandler(queries, pool)
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.Auth(queries, patCache))
+		r.Use(middleware.Auth(queries, patCache, tokenPool))
 
 		// User.
 		r.Get("/api/me", userH.GetMe)
@@ -146,7 +158,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 		r.Post("/api/agents/{id}/restore", agentH.RestoreAgent)
 
 		// Tasks.
-		r.Post("/api/tasks", userH.CreateTask)
+		r.With(middleware.BodyLimit(32 << 10)).Post("/api/tasks", userH.CreateTask) // 32 KB limit
 		r.Get("/api/tasks", userH.ListTasks)
 		r.Get("/api/tasks/{taskId}", userH.GetTask)
 		r.Get("/api/tasks/{taskId}/messages", userH.ListTaskMessages)
@@ -198,18 +210,11 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub) chi.Router {
 // in tasks 8.4, 8.6, and 8.8.
 func placeholderHandler(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSONResponse(w, http.StatusNotImplemented, map[string]string{
+		httputil.WriteJSON(w, http.StatusNotImplemented, map[string]string{
 			"status":  "not implemented",
 			"handler": name,
 		})
 	}
-}
-
-// writeJSONResponse writes a JSON response with the given status code.
-func writeJSONResponse(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
 }
 
 // wsTokenValidator implements realtime.TokenValidator using the PAT cache and DB.
@@ -237,8 +242,20 @@ func (v *wsTokenValidator) ValidateToken(token string) (userID string, isDaemon 
 		return "", false, "", false
 	}
 
-	uid := pgUUIDToString(pat.UserID)
-	v.cache.Set(hash, uid, middleware.CacheTTL)
+	// Check token expiry: reject if expires_at is set and in the past.
+	if pat.ExpiresAt.Valid && time.Now().After(pat.ExpiresAt.Time) {
+		return "", false, "", false
+	}
+
+	uid := pgutil.UUIDToString(pat.UserID)
+
+	// Cache with TTL that respects token expiry.
+	var expiresAt time.Time
+	if pat.ExpiresAt.Valid {
+		expiresAt = pat.ExpiresAt.Time
+	}
+	v.cache.Set(hash, uid, middleware.TTLForExpiry(time.Now(), expiresAt))
+
 	return uid, false, "", true
 }
 
@@ -246,12 +263,4 @@ func (v *wsTokenValidator) ValidateToken(token string) (userID string, isDaemon 
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
-}
-
-// pgUUIDToString converts a pgtype.UUID to string.
-func pgUUIDToString(u pgtype.UUID) string {
-	if !u.Valid {
-		return ""
-	}
-	return fmt.Sprintf("%x-%x-%x-%x-%x", u.Bytes[0:4], u.Bytes[4:6], u.Bytes[6:8], u.Bytes[8:10], u.Bytes[10:16])
 }

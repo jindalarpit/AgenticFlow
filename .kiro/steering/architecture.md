@@ -10,30 +10,53 @@ This project follows a modular Go backend + React SPA architecture.
 
 ```
 AgenticFlow/
+├── go.work              # Go workspace: server/, daemon/, shared/
 ├── server/
 │   ├── cmd/
-│   │   ├── af/          # CLI binary
 │   │   └── server/      # Server binary
 │   ├── internal/
-│   │   ├── auth/        # Token management, PAT cache
-│   │   ├── cli/         # CLI config loading
-│   │   ├── daemon/      # Daemon runtime
-│   │   │   └── execenv/ # Task execution env
 │   │   ├── handler/     # HTTP handlers
-│   │   ├── middleware/   # Auth middleware
-│   │   ├── realtime/    # WebSocket hub
-│   │   └── service/     # Business logic
+│   │   ├── middleware/   # Auth middleware, body limits, worker pool
+│   │   ├── migrate/     # Database migration runner
+│   │   ├── realtime/    # WebSocket hub (multi-connection)
+│   │   └── service/     # Business logic (TaskService, AgentService)
 │   ├── migrations/      # SQL migrations
 │   ├── pkg/
-│   │   └── db/generated/ # sqlc generated code
+│   │   └── db/generated/ # sqlc generated code (Querier interface)
+│   ├── queries/         # SQL query files for sqlc
+│   ├── go.mod
+│   └── go.sum
+├── daemon/
+│   ├── cmd/
+│   │   └── af/          # CLI + daemon binary
+│   ├── internal/
+│   │   ├── cli/         # CLI config loading
+│   │   ├── daemon/      # Daemon runtime, WS push receiver
+│   │   ├── detection/   # AI runtime detection
+│   │   ├── execution/   # Unified task executor, backpressure buffer
+│   │   ├── health/      # Health check
+│   │   ├── release/     # Release management
+│   │   └── ws/          # WebSocket client for server push
+│   ├── pkg/
+│   │   ├── agent/       # Agent type definitions
+│   │   ├── mcp/         # MCP protocol support
+│   │   └── skill/       # Skill definitions
+│   ├── go.mod
+│   └── go.sum
+├── shared/
+│   ├── api/             # Request/response types (daemon↔server)
+│   ├── constants/       # Status strings, default values
+│   ├── httputil/        # HTTP response helpers (WriteJSON, WriteErrorJSON)
+│   ├── pgutil/          # PostgreSQL utilities (UUIDToString)
 │   ├── go.mod
 │   └── go.sum
 ├── web/                 # Vite + React SPA (NOT Next.js)
 │   ├── src/
-│   │   ├── components/
+│   │   ├── components/  # UI components (ErrorBoundary, etc.)
+│   │   ├── contexts/    # React contexts (WebSocketProvider)
 │   │   ├── pages/
 │   │   ├── hooks/
-│   │   └── lib/
+│   │   └── lib/         # WebSocketClient class, utilities
 │   └── package.json
 ├── Makefile
 ├── Dockerfile
@@ -42,12 +65,23 @@ AgenticFlow/
 
 ## Core Principles
 
-1. **Single Go module** — All Go code lives under `server/` with a single `go.mod`
+1. **Go workspace** — The project uses `go.work` with three modules: `server/`, `daemon/`, and `shared/`
 2. **Chi router** — Use `github.com/go-chi/chi/v5` for HTTP routing
 3. **pgx/v5 + sqlc** — Use `github.com/jackc/pgx/v5` for PostgreSQL, `sqlc` for type-safe queries
 4. **gorilla/websocket** — Use for WebSocket connections (daemon ↔ server, client ↔ server)
 5. **golang-migrate** — Use for database migrations
 6. **slog** — Use `log/slog` for structured logging
+
+## Shared Module (`shared/`)
+
+The `shared/` module contains constants, types, and utility packages used by both Server and Daemon:
+
+- **`shared/api/`** — Request/response types for daemon↔server communication (task claims, daemon registration, WebSocket events)
+- **`shared/constants/`** — Status strings, default configuration values
+- **`shared/pgutil/`** — PostgreSQL utility functions (`UUIDToString` for `pgtype.UUID` conversion)
+- **`shared/httputil/`** — HTTP response helpers (`WriteJSON`, `WriteErrorJSON`)
+
+Both `server/` and `daemon/` import from `shared/` via the Go workspace. Never duplicate utility functions — add shared code here instead.
 
 ## What NOT to Include
 

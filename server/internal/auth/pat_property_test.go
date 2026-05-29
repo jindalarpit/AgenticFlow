@@ -230,7 +230,7 @@ func TestProperty13_PATAuthenticationEnforcement_NoHeader(t *testing.T) {
 
 		queries := db.New(&mockDBTX{})
 		cache := middleware.NewPATCache()
-		handler := middleware.Auth(queries, cache)(protectedHandler())
+		handler := middleware.Auth(queries, cache, nil)(protectedHandler())
 
 		req := httptest.NewRequest(method, path, nil)
 		// No Authorization header set
@@ -248,7 +248,7 @@ func TestProperty13_PATAuthenticationEnforcement_EmptyBearer(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		queries := db.New(&mockDBTX{})
 		cache := middleware.NewPATCache()
-		handler := middleware.Auth(queries, cache)(protectedHandler())
+		handler := middleware.Auth(queries, cache, nil)(protectedHandler())
 
 		req := httptest.NewRequest("GET", "/api/me", nil)
 		// Empty Bearer token
@@ -277,7 +277,7 @@ func TestProperty13_PATAuthenticationEnforcement_NonAfPrefix(t *testing.T) {
 
 		queries := db.New(&mockDBTX{})
 		cache := middleware.NewPATCache()
-		handler := middleware.Auth(queries, cache)(protectedHandler())
+		handler := middleware.Auth(queries, cache, nil)(protectedHandler())
 
 		req := httptest.NewRequest("GET", "/api/me", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -318,7 +318,7 @@ func TestProperty13_PATAuthenticationEnforcement_RandomGarbage(t *testing.T) {
 
 		queries := db.New(&mockDBTX{})
 		cache := middleware.NewPATCache()
-		handler := middleware.Auth(queries, cache)(protectedHandler())
+		handler := middleware.Auth(queries, cache, nil)(protectedHandler())
 
 		req := httptest.NewRequest("GET", "/api/tasks", nil)
 		req.Header.Set("Authorization", authHeader)

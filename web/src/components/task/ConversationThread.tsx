@@ -12,7 +12,8 @@ import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { apiFetch } from "../../lib/api";
-import { wsClient, type WSEvent } from "../../lib/ws";
+import { useWSClient } from "../../contexts/WebSocketContext";
+import type { WSEvent } from "../../lib/ws";
 
 export interface PromptHistoryEntry {
   id: string;
@@ -30,6 +31,7 @@ export interface ConversationThreadProps {
 
 export function ConversationThread({ taskId, stageName }: ConversationThreadProps) {
   const queryClient = useQueryClient();
+  const wsClient = useWSClient();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { data: history, isLoading } = useQuery({

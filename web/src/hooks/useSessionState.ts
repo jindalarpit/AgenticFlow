@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { wsClient, type WSEvent } from "../lib/ws";
+import { useWSClient } from "../contexts/WebSocketContext";
+import type { WSEvent } from "../lib/ws";
 
 /**
  * Possible session states for a running task's interaction lifecycle.
@@ -33,6 +34,7 @@ interface SessionStateChangedPayload {
  * Validates: Requirements 7.5, 5.3
  */
 export function useSessionState(taskId: string): SessionState {
+  const wsClient = useWSClient();
   const [state, setState] = useState<SessionState>("idle");
 
   useEffect(() => {
@@ -67,7 +69,7 @@ export function useSessionState(taskId: string): SessionState {
       unsub2();
       unsub3();
     };
-  }, [taskId]);
+  }, [taskId, wsClient]);
 
   return state;
 }

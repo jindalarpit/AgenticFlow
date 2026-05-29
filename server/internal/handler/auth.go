@@ -48,11 +48,11 @@ type userResponse struct {
 
 // AuthHandler holds dependencies for authentication HTTP handlers.
 type AuthHandler struct {
-	Queries *db.Queries
+	Queries db.Querier
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(queries *db.Queries) *AuthHandler {
+func NewAuthHandler(queries db.Querier) *AuthHandler {
 	return &AuthHandler{Queries: queries}
 }
 

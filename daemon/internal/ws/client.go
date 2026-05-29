@@ -18,31 +18,43 @@ import (
 // EventHandler is called when a WebSocket event is received from the server.
 type EventHandler func(event api.WebSocketEvent)
 
+// ConnectionStateHandler is called when the WebSocket connection state changes.
+// connected=true means the connection is established; connected=false means disconnected.
+type ConnectionStateHandler func(connected bool)
+
 // Client manages a WebSocket connection to the AgenticFlow server for
-// receiving real-time events (e.g., task_input for stdin relay).
+// receiving real-time events (e.g., task_input for stdin relay, task_available for push).
 type Client struct {
 	serverURL string
 	token     string
 	daemonID  string
 	handler   EventHandler
+	onState   ConnectionStateHandler
 
 	mu   sync.Mutex
 	conn *websocket.Conn
 }
 
 // NewClient creates a new WebSocket client.
-func NewClient(serverURL, token, daemonID string, handler EventHandler) *Client {
+// The handler is called for each received event.
+// The onState callback (optional) is called when connection state changes.
+func NewClient(serverURL, token, daemonID string, handler EventHandler, onState ConnectionStateHandler) *Client {
 	return &Client{
 		serverURL: strings.TrimRight(serverURL, "/"),
 		token:     token,
 		daemonID:  daemonID,
 		handler:   handler,
+		onState:   onState,
 	}
 }
 
 // Connect establishes the WebSocket connection to the server.
-// It blocks until the context is cancelled, reconnecting on failures.
+// It blocks until the context is cancelled, reconnecting on failures
+// with exponential backoff (1s, 2s, 4s, 8s, 16s, capped at 30s).
 func (c *Client) Connect(ctx context.Context) error {
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -53,14 +65,28 @@ func (c *Client) Connect(ctx context.Context) error {
 
 		err := c.connectOnce(ctx)
 		if err != nil {
-			slog.Warn("websocket connection failed, reconnecting", "error", err)
+			slog.Warn("websocket connection failed, reconnecting",
+				"error", err,
+				"backoff", backoff,
+			)
 		}
 
-		// Wait before reconnecting
+		// Notify disconnected state.
+		if c.onState != nil {
+			c.onState(false)
+		}
+
+		// Wait with exponential backoff before reconnecting.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(backoff):
+		}
+
+		// Increase backoff for next attempt.
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
 		}
 	}
 }
@@ -88,16 +114,21 @@ func (c *Client) Send(event api.WebSocketEvent) error {
 func (c *Client) connectOnce(ctx context.Context) error {
 	wsURL := c.buildWSURL()
 
+	// Use Sec-WebSocket-Protocol header for authentication (same as frontend).
+	// The server expects "access_token.<token>" as a sub-protocol value.
 	header := http.Header{}
-	if c.token != "" {
-		header.Set("Authorization", "Bearer "+c.token)
-	}
 	if c.daemonID != "" {
 		header.Set("X-Daemon-ID", c.daemonID)
 	}
 
+	subprotocols := []string{}
+	if c.token != "" {
+		subprotocols = append(subprotocols, "access_token."+c.token)
+	}
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+		Subprotocols:     subprotocols,
 	}
 
 	conn, _, err := dialer.DialContext(ctx, wsURL, header)
@@ -111,6 +142,11 @@ func (c *Client) connectOnce(ctx context.Context) error {
 
 	slog.Info("websocket connected", "url", wsURL)
 
+	// Notify connected state and reset backoff on successful connection.
+	if c.onState != nil {
+		c.onState(true)
+	}
+
 	defer func() {
 		c.mu.Lock()
 		c.conn = nil
@@ -118,7 +154,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		conn.Close()
 	}()
 
-	// Read messages until connection closes
+	// Read messages until connection closes.
 	for {
 		select {
 		case <-ctx.Done():
@@ -149,10 +185,10 @@ func (c *Client) connectOnce(ctx context.Context) error {
 // buildWSURL constructs the WebSocket URL from the server URL.
 func (c *Client) buildWSURL() string {
 	url := c.serverURL
-	// Convert http(s) to ws(s)
+	// Convert http(s) to ws(s).
 	url = strings.Replace(url, "https://", "wss://", 1)
 	url = strings.Replace(url, "http://", "ws://", 1)
-	return url + "/api/daemon/ws"
+	return url + "/ws"
 }
 
 // close cleanly closes the WebSocket connection.
