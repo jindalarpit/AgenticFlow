@@ -7,4 +7,6 @@ export { KeyValueEditor } from "./KeyValueEditor";
 export { ArrayEditor } from "./ArrayEditor";
 export { McpConfigEditor } from "./McpConfigEditor";
 export { SkillsPicker } from "./SkillsPicker";
+export { OnlineProviderSection } from "./OnlineProviderSection";
+export { DeliverableTypeSelector } from "./DeliverableTypeSelector";
 export * from "./types";

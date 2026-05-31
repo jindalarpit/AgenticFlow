@@ -15,6 +15,8 @@ import (
 	"github.com/agenticflow/agenticflow/server/internal/middleware"
 	"github.com/agenticflow/agenticflow/server/internal/migrate"
 	"github.com/agenticflow/agenticflow/server/internal/realtime"
+	"github.com/agenticflow/agenticflow/server/internal/seed"
+	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
 )
 
 var (
@@ -67,6 +69,10 @@ func main() {
 		slog.Error("migration failed", "error", err)
 		os.Exit(1)
 	}
+
+	// Seed built-in skill templates after migrations, before accepting traffic.
+	queries := db.New(pool)
+	seed.SeedTemplates(ctx, queries)
 
 	// Create WebSocket hub.
 	hub := realtime.NewHub()

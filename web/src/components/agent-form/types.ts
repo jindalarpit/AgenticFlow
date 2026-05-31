@@ -6,12 +6,18 @@
 
 /* ─── Form Values ─── */
 
+/** Runtime mode for an agent: local (daemon) or online (cloud provider). */
+export type RuntimeMode = "local" | "online";
+
 /** All editable fields for an agent. */
 export interface AgentFormValues {
   name: string;
   description: string;
   instructions: string;
+  runtime_mode: RuntimeMode;
   runtime_id: string;
+  provider_id: string;
+  deliverable_type_id: string;
   model: string;
   custom_env: Record<string, string>;
   custom_args: string[];
@@ -27,7 +33,10 @@ export function defaultFormValues(): AgentFormValues {
     name: "",
     description: "",
     instructions: "",
+    runtime_mode: "local",
     runtime_id: "",
+    provider_id: "",
+    deliverable_type_id: "",
     model: "",
     custom_env: {},
     custom_args: [],

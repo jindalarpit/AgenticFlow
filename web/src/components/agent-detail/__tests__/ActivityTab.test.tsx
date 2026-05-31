@@ -27,6 +27,7 @@ const baseAgent: Agent = {
   description: "Test agent",
   instructions: "",
   avatar_url: null,
+  runtime_mode: "local",
   runtime_id: "rt-1",
   runtime_name: "Claude CLI",
   custom_env: {},

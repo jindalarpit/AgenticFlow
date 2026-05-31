@@ -65,6 +65,9 @@ type CreateAgentParams struct {
 	Visibility         string
 	MaxConcurrentTasks int32
 	MCPConfig          json.RawMessage
+	RuntimeMode        string
+	ProviderID         string
+	DeliverableTypeID  string
 }
 
 // UpdateAgentParams holds the parameters for updating an agent.
@@ -84,6 +87,9 @@ type UpdateAgentParams struct {
 	MaxConcurrentTasks *int32
 	MCPConfig          json.RawMessage
 	MCPConfigPresent   bool // true if mcp_config was explicitly in the request
+	RuntimeMode        *string
+	ProviderID         *string
+	DeliverableTypeID  *string
 }
 
 // ---------------------------------------------------------------------------
@@ -167,27 +173,138 @@ func (s *AgentService) Create(ctx context.Context, params CreateAgentParams) (db
 		mcpConfigBytes = []byte(params.MCPConfig)
 	}
 
-	// --- Validate runtime_id exists ---
-	if params.RuntimeID == "" {
-		return db.Agent{}, Validation("runtime_id is required")
+	// --- Default runtime_mode ---
+	if params.RuntimeMode == "" {
+		params.RuntimeMode = "local"
 	}
-	runtimeUUID, err := parseUUID(params.RuntimeID)
-	if err != nil {
-		return db.Agent{}, Validation("invalid runtime_id format")
+	if params.RuntimeMode != "local" && params.RuntimeMode != "online" {
+		return db.Agent{}, Validation("runtime_mode must be \"local\" or \"online\"")
 	}
-	_, err = s.q.GetRuntimeByID(ctx, runtimeUUID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return db.Agent{}, Validation("runtime_id does not reference an existing runtime")
-		}
-		slog.Error("create agent: get runtime failed", "runtime_id", params.RuntimeID, "error", err)
-		return db.Agent{}, Internal("failed to verify runtime")
+
+	// --- Reject both provider_id and runtime_id set simultaneously ---
+	if params.ProviderID != "" && params.RuntimeID != "" {
+		return db.Agent{}, Unprocessable("only one of provider_id or runtime_id may be specified")
 	}
 
 	// --- Parse user UUID ---
 	userUUID, err := parseUUID(params.UserID)
 	if err != nil {
 		return db.Agent{}, Internal("invalid user id")
+	}
+
+	// --- Runtime mode specific validation ---
+	var runtimeUUID pgtype.UUID
+	var providerUUID pgtype.UUID
+
+	switch params.RuntimeMode {
+	case "local":
+		// Local mode: require runtime_id, reject provider_id
+		if params.RuntimeID == "" {
+			return db.Agent{}, Validation("runtime_id is required")
+		}
+		runtimeUUID, err = parseUUID(params.RuntimeID)
+		if err != nil {
+			return db.Agent{}, Validation("invalid runtime_id format")
+		}
+		_, err = s.q.GetRuntimeByID(ctx, runtimeUUID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return db.Agent{}, Validation("runtime_id does not reference an existing runtime")
+			}
+			slog.Error("create agent: get runtime failed", "runtime_id", params.RuntimeID, "error", err)
+			return db.Agent{}, Internal("failed to verify runtime")
+		}
+
+	case "online":
+		// Online mode: require provider_id, reject runtime_id
+		if params.ProviderID == "" {
+			return db.Agent{}, Unprocessable("provider_id is required for online agents")
+		}
+		providerUUID, err = parseUUID(params.ProviderID)
+		if err != nil {
+			return db.Agent{}, Validation("invalid provider_id format")
+		}
+		// Verify provider exists, belongs to user, and is active
+		provider, err := s.q.GetProvider(ctx, db.GetProviderParams{
+			ID:     providerUUID,
+			UserID: userUUID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return db.Agent{}, Unprocessable("provider is invalid or inactive")
+			}
+			slog.Error("create agent: get provider failed", "provider_id", params.ProviderID, "error", err)
+			return db.Agent{}, Internal("failed to verify provider")
+		}
+		if provider.Status != "active" {
+			return db.Agent{}, Unprocessable("provider is invalid or inactive")
+		}
+
+		// Online mode: require model (non-empty, ≤100 chars)
+		if params.Model == "" {
+			return db.Agent{}, Unprocessable("model is required for online agents")
+		}
+		if utf8.RuneCountInString(params.Model) > maxAgentModelLength {
+			return db.Agent{}, Validation(fmt.Sprintf("model must be %d characters or fewer", maxAgentModelLength))
+		}
+
+		// Validate model is in provider's models list
+		var providerModels []string
+		if err := json.Unmarshal(provider.Models, &providerModels); err != nil {
+			slog.Error("create agent: unmarshal provider models failed", "provider_id", params.ProviderID, "error", err)
+			return db.Agent{}, Internal("failed to read provider models")
+		}
+		modelFound := false
+		for _, m := range providerModels {
+			if m == params.Model {
+				modelFound = true
+				break
+			}
+		}
+		if !modelFound {
+			return db.Agent{}, Unprocessable("model is not available on the selected provider")
+		}
+	}
+
+	// --- Default deliverable_type_id based on runtime_mode ---
+	var deliverableTypeUUID pgtype.UUID
+	if params.DeliverableTypeID != "" {
+		deliverableTypeUUID, err = parseUUID(params.DeliverableTypeID)
+		if err != nil {
+			return db.Agent{}, Validation("invalid deliverable_type_id format")
+		}
+	} else {
+		// Apply default based on runtime_mode
+		var defaultName string
+		if params.RuntimeMode == "local" {
+			defaultName = "Code Execution"
+		} else {
+			defaultName = "Chat Completion"
+		}
+		dt, err := s.q.GetSystemDeliverableTypeByName(ctx, defaultName)
+		if err != nil {
+			slog.Error("create agent: get default deliverable type failed", "name", defaultName, "error", err)
+			return db.Agent{}, Internal("failed to resolve default deliverable type")
+		}
+		deliverableTypeUUID = dt.ID
+	}
+
+	// --- Reject Code Execution + online incompatibility ---
+	if params.RuntimeMode == "online" && deliverableTypeUUID.Valid {
+		dt, err := s.q.GetDeliverableType(ctx, db.GetDeliverableTypeParams{
+			ID:     deliverableTypeUUID,
+			UserID: userUUID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return db.Agent{}, Unprocessable("deliverable type not found")
+			}
+			slog.Error("create agent: get deliverable type failed", "error", err)
+			return db.Agent{}, Internal("failed to verify deliverable type")
+		}
+		if dt.Name == "Code Execution" {
+			return db.Agent{}, Unprocessable("online agents cannot use the Code Execution deliverable type")
+		}
 	}
 
 	// --- Reject duplicate names per user ---
@@ -235,6 +352,9 @@ func (s *AgentService) Create(ctx context.Context, params CreateAgentParams) (db
 		Visibility:         params.Visibility,
 		AvatarUrl:          pgtype.Text{String: ptrToString(params.AvatarURL), Valid: params.AvatarURL != nil},
 		McpConfig:          mcpConfigBytes,
+		RuntimeMode:        params.RuntimeMode,
+		ProviderID:         providerUUID,
+		DeliverableTypeID:  deliverableTypeUUID,
 	})
 	if err != nil {
 		slog.Error("create agent: insert failed", "user_id", params.UserID, "error", err)
@@ -408,6 +528,160 @@ func (s *AgentService) Update(ctx context.Context, params UpdateAgentParams) (db
 		}
 	}
 
+	// --- Validate runtime_mode (if provided) ---
+	if params.RuntimeMode != nil {
+		if *params.RuntimeMode != "local" && *params.RuntimeMode != "online" {
+			return db.Agent{}, Validation("runtime_mode must be \"local\" or \"online\"")
+		}
+	}
+
+	// --- Reject both provider_id and runtime_id set simultaneously ---
+	if params.ProviderID != nil && params.RuntimeID != nil {
+		return db.Agent{}, Unprocessable("only one of provider_id or runtime_id may be specified")
+	}
+
+	// --- Fetch existing agent to determine effective runtime_mode ---
+	existingAgent, err := s.q.GetAgent(ctx, agentUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Agent{}, NotFound("agent not found")
+		}
+		slog.Error("update agent: get existing agent failed", "agent_id", params.AgentID, "error", err)
+		return db.Agent{}, Internal("failed to get agent")
+	}
+
+	// Determine effective runtime_mode after update
+	effectiveMode := existingAgent.RuntimeMode
+	if params.RuntimeMode != nil {
+		effectiveMode = *params.RuntimeMode
+	}
+
+	// Determine effective model after update
+	effectiveModel := existingAgent.Model.String
+	if params.Model != nil {
+		effectiveModel = *params.Model
+	}
+
+	// --- Validate provider_id (if provided or if switching to online mode) ---
+	var providerUUID pgtype.UUID
+	var setProviderID bool
+	if params.ProviderID != nil {
+		setProviderID = true
+		if *params.ProviderID == "" {
+			// Explicitly clearing provider_id (e.g., switching to local)
+			providerUUID = pgtype.UUID{}
+		} else {
+			providerUUID, err = parseUUID(*params.ProviderID)
+			if err != nil {
+				return db.Agent{}, Validation("invalid provider_id format")
+			}
+			// Verify provider exists, belongs to user, and is active
+			provider, err := s.q.GetProvider(ctx, db.GetProviderParams{
+				ID:     providerUUID,
+				UserID: userUUID,
+			})
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return db.Agent{}, Unprocessable("provider is invalid or inactive")
+				}
+				slog.Error("update agent: get provider failed", "provider_id", *params.ProviderID, "error", err)
+				return db.Agent{}, Internal("failed to verify provider")
+			}
+			if provider.Status != "active" {
+				return db.Agent{}, Unprocessable("provider is invalid or inactive")
+			}
+
+			// Validate model is in provider's models list
+			if effectiveMode == "online" && effectiveModel != "" {
+				var providerModels []string
+				if err := json.Unmarshal(provider.Models, &providerModels); err != nil {
+					slog.Error("update agent: unmarshal provider models failed", "provider_id", *params.ProviderID, "error", err)
+					return db.Agent{}, Internal("failed to read provider models")
+				}
+				modelFound := false
+				for _, m := range providerModels {
+					if m == effectiveModel {
+						modelFound = true
+						break
+					}
+				}
+				if !modelFound {
+					return db.Agent{}, Unprocessable("model is not available on the selected provider")
+				}
+			}
+		}
+	}
+
+	// --- Online mode validations ---
+	if effectiveMode == "online" {
+		// If switching to online, require provider_id
+		effectiveProviderID := existingAgent.ProviderID
+		if setProviderID {
+			effectiveProviderID = providerUUID
+		}
+		if !effectiveProviderID.Valid {
+			return db.Agent{}, Unprocessable("provider_id is required for online agents")
+		}
+
+		// Online mode requires model
+		if effectiveModel == "" {
+			return db.Agent{}, Unprocessable("model is required for online agents")
+		}
+		if utf8.RuneCountInString(effectiveModel) > maxAgentModelLength {
+			return db.Agent{}, Validation(fmt.Sprintf("model must be %d characters or fewer", maxAgentModelLength))
+		}
+
+		// If model is changing and provider is not changing, validate against existing provider
+		if params.Model != nil && !setProviderID && effectiveProviderID.Valid {
+			provider, err := s.q.GetProvider(ctx, db.GetProviderParams{
+				ID:     effectiveProviderID,
+				UserID: userUUID,
+			})
+			if err == nil {
+				var providerModels []string
+				if err := json.Unmarshal(provider.Models, &providerModels); err == nil {
+					modelFound := false
+					for _, m := range providerModels {
+						if m == effectiveModel {
+							modelFound = true
+							break
+						}
+					}
+					if !modelFound {
+						return db.Agent{}, Unprocessable("model is not available on the selected provider")
+					}
+				}
+			}
+		}
+	}
+
+	// --- Local mode validations ---
+	if effectiveMode == "local" {
+		// If switching to local, require runtime_id
+		effectiveRuntimeID := existingAgent.RuntimeID
+		if params.RuntimeID != nil {
+			effectiveRuntimeID = runtimeUUID
+		}
+		if !effectiveRuntimeID.Valid {
+			return db.Agent{}, Validation("runtime_id is required for local agents")
+		}
+	}
+
+	// --- Handle deliverable_type_id ---
+	var deliverableTypeUUID pgtype.UUID
+	var setDeliverableTypeID bool
+	if params.DeliverableTypeID != nil {
+		setDeliverableTypeID = true
+		if *params.DeliverableTypeID == "" {
+			deliverableTypeUUID = pgtype.UUID{}
+		} else {
+			deliverableTypeUUID, err = parseUUID(*params.DeliverableTypeID)
+			if err != nil {
+				return db.Agent{}, Validation("invalid deliverable_type_id format")
+			}
+		}
+	}
+
 	// --- Build update params (COALESCE-based: nil = keep existing) ---
 	dbParams := db.UpdateAgentParams{
 		ID:     agentUUID,
@@ -424,6 +698,7 @@ func (s *AgentService) Update(ctx context.Context, params UpdateAgentParams) (db
 		dbParams.Instructions = pgtype.Text{String: *params.Instructions, Valid: true}
 	}
 	if params.RuntimeID != nil {
+		dbParams.SetRuntimeID = true
 		dbParams.RuntimeID = runtimeUUID
 	}
 	if params.Model != nil {
@@ -464,6 +739,35 @@ func (s *AgentService) Update(ctx context.Context, params UpdateAgentParams) (db
 			}
 			dbParams.McpConfig = []byte(params.MCPConfig)
 		}
+	}
+
+	// --- Handle runtime_mode ---
+	if params.RuntimeMode != nil {
+		dbParams.RuntimeMode = pgtype.Text{String: *params.RuntimeMode, Valid: true}
+	}
+
+	// --- Handle provider_id ---
+	if setProviderID {
+		dbParams.SetProviderID = true
+		dbParams.ProviderID = providerUUID
+	}
+
+	// --- Handle deliverable_type_id ---
+	if setDeliverableTypeID {
+		dbParams.SetDeliverableTypeID = true
+		dbParams.DeliverableTypeID = deliverableTypeUUID
+	}
+
+	// If switching to local mode, clear provider_id
+	if params.RuntimeMode != nil && *params.RuntimeMode == "local" && !setProviderID {
+		dbParams.SetProviderID = true
+		dbParams.ProviderID = pgtype.UUID{} // NULL
+	}
+
+	// If switching to online mode, clear runtime_id
+	if params.RuntimeMode != nil && *params.RuntimeMode == "online" && params.RuntimeID == nil {
+		dbParams.SetRuntimeID = true
+		dbParams.RuntimeID = pgtype.UUID{} // NULL
 	}
 
 	agent, err := s.q.UpdateAgent(ctx, dbParams)

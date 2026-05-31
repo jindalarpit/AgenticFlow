@@ -18,6 +18,7 @@ import {
   FilterDropdown,
   CopyButton,
   MetadataChips,
+  TokenUsageDisplay,
 } from "../components/task-timeline";
 import { StageProgressIndicator } from "../components/task/StageProgressIndicator";
 import { StageApprovalPanel } from "../components/task/StageApprovalPanel";
@@ -540,6 +541,13 @@ export default function TaskDetail() {
             <p className="mt-1 whitespace-pre-wrap font-mono text-sm text-red-800">
               {task.error_message}
             </p>
+          </div>
+        )}
+
+        {/* Token Usage — shown when task completes with token usage metadata (online execution) */}
+        {task.token_usage && isTerminal && (
+          <div className="mt-4">
+            <TokenUsageDisplay tokenUsage={task.token_usage} />
           </div>
         )}
 

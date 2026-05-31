@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -15,8 +16,10 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/agenticflow/agenticflow/server/internal/crypto"
 	"github.com/agenticflow/agenticflow/server/internal/handler"
 	"github.com/agenticflow/agenticflow/server/internal/middleware"
+	"github.com/agenticflow/agenticflow/server/internal/provider"
 	"github.com/agenticflow/agenticflow/server/internal/realtime"
 	"github.com/agenticflow/agenticflow/server/internal/service"
 	db "github.com/agenticflow/agenticflow/server/pkg/db/generated"
@@ -122,6 +125,32 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, tokenPool *middleware.Toke
 		r.Post("/tasks/{taskId}/stages/{stageName}/complete", daemonH.CompleteStage)
 	})
 
+	// Initialize online AI provider components.
+	// Credential encryptor requires AGENTICFLOW_ENCRYPTION_KEY (64 hex chars).
+	// If not set, online providers won't work but the server still starts.
+	var encryptor *crypto.CredentialEncryptor
+	encryptionKey := os.Getenv("AGENTICFLOW_ENCRYPTION_KEY")
+	if encryptionKey == "" {
+		slog.Warn("AGENTICFLOW_ENCRYPTION_KEY not set: online AI providers will be unavailable")
+	} else {
+		var err error
+		encryptor, err = crypto.NewCredentialEncryptor(encryptionKey)
+		if err != nil {
+			slog.Warn("failed to initialize credential encryptor: online AI providers will be unavailable", "error", err)
+		}
+	}
+
+	registry := provider.NewRegistry()
+	providerService := service.NewProviderService(queries, hub, encryptor, registry)
+	onlineEngine := service.NewOnlineExecutionEngine(queries, hub, encryptor, registry)
+
+	// Create TaskService and wire the online execution engine.
+	taskService := service.NewTaskService(queries, hub)
+	taskService.SetOnlineExecutionEngine(onlineEngine)
+
+	providerHandler := handler.NewProviderHandler(providerService)
+	deliverableTypeHandler := handler.NewDeliverableTypeHandler(queries)
+
 	// Protected API routes (require user PAT auth).
 	userH := handler.NewUserHandler(queries, hub)
 	userH.AgentStatusService = agentStatusSvc
@@ -129,6 +158,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, tokenPool *middleware.Toke
 	agentH := handler.NewAgentHandler(queries, hub)
 	runtimeH := handler.NewRuntimeHandler(queries)
 	skillH := handler.NewSkillHandler(queries)
+	templateH := handler.NewSkillTemplateHandler(queries)
 	agentSkillH := handler.NewAgentSkillHandler(queries, pool)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, tokenPool))
@@ -176,6 +206,11 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, tokenPool *middleware.Toke
 		r.Put("/api/custom-agents/{id}", userH.UpdateCustomAgent)
 		r.Delete("/api/custom-agents/{id}", userH.DeleteCustomAgent)
 
+		// Skill Templates (registered before /api/skills to avoid route conflicts).
+		r.Get("/api/skill-templates", templateH.List)
+		r.Get("/api/skill-templates/{slug}", templateH.GetBySlug)
+		r.Post("/api/skill-templates/{slug}/instantiate", templateH.Instantiate)
+
 		// Skills.
 		r.Post("/api/skills", skillH.Create)
 		r.Get("/api/skills", skillH.List)
@@ -187,6 +222,12 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, tokenPool *middleware.Toke
 		// Agent-Skill Associations.
 		r.Put("/api/agents/{id}/skills", agentSkillH.SetSkills)
 		r.Get("/api/agents/{id}/skills", agentSkillH.GetSkills)
+
+		// Online AI Providers.
+		providerHandler.RegisterRoutes(r)
+
+		// Deliverable Types.
+		deliverableTypeHandler.RegisterRoutes(r)
 
 		// Tokens (PAT management).
 		r.Get("/api/tokens", patH.ListPersonalAccessTokens)

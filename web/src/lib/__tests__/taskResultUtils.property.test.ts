@@ -1,6 +1,6 @@
 // Feature: task-result-display, Property 1: Content truncation preserves invariants
 // **Validates: Requirements 1.3, 3.3**
-// Feature: task-result-display, Property 3: Final result extraction selects last stdout message
+// Feature: task-result-display, Property 3: Final result extraction concatenates all stdout messages
 // **Validates: Requirements 3.1, 3.2**
 
 import { describe, it, expect } from "vitest";
@@ -73,8 +73,8 @@ const arbAnyMessage: fc.Arbitrary<TaskMessage> = fc.oneof(
 
 // ─── Property 3 ─────────────────────────────────────────────────────────────
 
-describe("extractDashboardResult — Property 3: Final result extraction selects last stdout message", () => {
-  it("returns content of the highest-sequence stdout message when stdout messages exist", () => {
+describe("extractDashboardResult — Property 3: Final result extraction concatenates all stdout messages", () => {
+  it("returns concatenation of all stdout messages sorted by sequence when stdout messages exist", () => {
     fc.assert(
       fc.property(
         // Generate at least one stdout message plus arbitrary other messages
@@ -86,13 +86,13 @@ describe("extractDashboardResult — Property 3: Final result extraction selects
 
           const result = extractDashboardResult(allMessages, outputPreview);
 
-          // Find the expected highest-sequence stdout message
-          const allStdout = allMessages.filter((m) => m.stream === "stdout");
-          const highestSeq = allStdout.reduce((max, msg) =>
-            msg.sequence > max.sequence ? msg : max
-          );
+          // Expected: all stdout messages sorted by sequence, concatenated
+          const allStdout = allMessages
+            .filter((m) => m.stream === "stdout")
+            .sort((a, b) => a.sequence - b.sequence);
+          const expected = allStdout.map((m) => m.content).join("");
 
-          expect(result).toBe(highestSeq.content);
+          expect(result).toBe(expected || null);
         }
       ),
       { numRuns: 100 }

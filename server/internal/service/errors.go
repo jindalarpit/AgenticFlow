@@ -5,11 +5,13 @@ package service
 type ErrorKind int
 
 const (
-	ErrNotFound   ErrorKind = iota // 404
-	ErrValidation                  // 400
-	ErrForbidden                   // 403
-	ErrConflict                    // 409
-	ErrInternal                    // 500
+	ErrNotFound      ErrorKind = iota // 404
+	ErrValidation                     // 400
+	ErrForbidden                      // 403
+	ErrConflict                       // 409
+	ErrUnprocessable                  // 422
+	ErrBadGateway                     // 502
+	ErrInternal                       // 500
 )
 
 // ServiceError is a typed error returned by service-layer methods. Handlers
@@ -44,6 +46,16 @@ func Conflict(msg string) *ServiceError {
 	return &ServiceError{Kind: ErrConflict, Message: msg}
 }
 
+// Unprocessable returns a ServiceError indicating a semantic validation failure (422).
+func Unprocessable(msg string) *ServiceError {
+	return &ServiceError{Kind: ErrUnprocessable, Message: msg}
+}
+
+// BadGateway returns a ServiceError indicating an upstream service failure (502).
+func BadGateway(msg string) *ServiceError {
+	return &ServiceError{Kind: ErrBadGateway, Message: msg}
+}
+
 // Internal returns a ServiceError indicating an unexpected internal failure.
 func Internal(msg string) *ServiceError {
 	return &ServiceError{Kind: ErrInternal, Message: msg}
@@ -60,6 +72,10 @@ func (k ErrorKind) HTTPStatus() int {
 		return 403
 	case ErrConflict:
 		return 409
+	case ErrUnprocessable:
+		return 422
+	case ErrBadGateway:
+		return 502
 	case ErrInternal:
 		return 500
 	default:

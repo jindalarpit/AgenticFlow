@@ -96,6 +96,7 @@ const STATUS_CONFIG: Record<AgentStatus, { dotColor: string; label: string }> = 
   idle: { dotColor: "bg-green-500", label: "Idle" },
   working: { dotColor: "bg-amber-500", label: "Working" },
   offline: { dotColor: "bg-gray-400", label: "Offline" },
+  error: { dotColor: "bg-red-500", label: "Error" },
 };
 
 function StatusBadge({ status }: { status: AgentStatus }) {

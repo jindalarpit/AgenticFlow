@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
+import { Link } from "react-router-dom";
 import type { Agent } from "../../lib/agent-detail-types";
 import { useAgentSkills, useSetAgentSkills } from "../../hooks/useAgentSkills";
 import { useSkills } from "../../hooks/useSkills";
@@ -112,9 +113,19 @@ export function SkillsTab({ agent }: SkillsTabProps) {
                   <p className="px-2 py-3 text-center text-xs text-gray-500">
                     Loading skills…
                   </p>
+                ) : allSkills.length === 0 ? (
+                  <p className="px-2 py-3 text-center text-xs text-gray-500">
+                    No personal skills yet.{" "}
+                    <Link
+                      to="/skills/library"
+                      className="text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      Browse Skill Library
+                    </Link>
+                  </p>
                 ) : unassignedSkills.length === 0 ? (
                   <p className="px-2 py-3 text-center text-xs text-gray-500">
-                    No available skills to add
+                    All available skills are attached
                   </p>
                 ) : (
                   <ul className="max-h-60 overflow-y-auto" role="listbox">

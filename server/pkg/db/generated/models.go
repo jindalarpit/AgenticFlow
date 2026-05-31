@@ -26,6 +26,9 @@ type Agent struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 	ArchivedAt         pgtype.Timestamptz `json:"archived_at"`
 	McpConfig          []byte             `json:"mcp_config"`
+	RuntimeMode        string             `json:"runtime_mode"`
+	ProviderID         pgtype.UUID        `json:"provider_id"`
+	DeliverableTypeID  pgtype.UUID        `json:"deliverable_type_id"`
 }
 
 type AgentRuntime struct {
@@ -56,6 +59,30 @@ type Daemon struct {
 	CliVersion      pgtype.Text        `json:"cli_version"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DeliverableType struct {
+	ID           pgtype.UUID        `json:"id"`
+	UserID       pgtype.UUID        `json:"user_id"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description"`
+	OutputFormat string             `json:"output_format"`
+	IsSystem     bool               `json:"is_system"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type OnlineProvider struct {
+	ID                   pgtype.UUID        `json:"id"`
+	UserID               pgtype.UUID        `json:"user_id"`
+	Name                 string             `json:"name"`
+	ProviderType         string             `json:"provider_type"`
+	CredentialsEncrypted string             `json:"credentials_encrypted"`
+	Status               string             `json:"status"`
+	StatusMessage        pgtype.Text        `json:"status_message"`
+	Models               []byte             `json:"models"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
 type PersonalAccessToken struct {
@@ -98,6 +125,19 @@ type SkillFile struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
+type SkillTemplate struct {
+	ID          pgtype.UUID        `json:"id"`
+	Slug        string             `json:"slug"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Content     string             `json:"content"`
+	Category    string             `json:"category"`
+	Version     string             `json:"version"`
+	Icon        pgtype.Text        `json:"icon"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Task struct {
 	ID             pgtype.UUID        `json:"id"`
 	UserID         pgtype.UUID        `json:"user_id"`
@@ -118,6 +158,8 @@ type Task struct {
 	WorkspaceMode  string             `json:"workspace_mode"`
 	WorkspacePath  pgtype.Text        `json:"workspace_path"`
 	GitRepoUrl     pgtype.Text        `json:"git_repo_url"`
+	TokenUsage     []byte             `json:"token_usage"`
+	ProviderID     pgtype.UUID        `json:"provider_id"`
 }
 
 type TaskMessage struct {

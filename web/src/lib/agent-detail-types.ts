@@ -7,7 +7,7 @@
 
 /* ─── Status Literals ─── */
 
-export type AgentStatus = "idle" | "working" | "offline";
+export type AgentStatus = "idle" | "working" | "offline" | "error";
 
 export type AgentVisibility = "private" | "shared";
 
@@ -38,8 +38,11 @@ export interface Agent {
   description: string;
   instructions: string;
   avatar_url: string | null;
+  runtime_mode: "local" | "online";
   runtime_id: string;
   runtime_name?: string;
+  provider_id?: string;
+  deliverable_type_id?: string;
   custom_env: Record<string, string>;
   custom_args: string[];
   model: string;

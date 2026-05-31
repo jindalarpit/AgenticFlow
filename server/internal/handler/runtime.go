@@ -60,19 +60,25 @@ func (h *RuntimeHandler) ListRuntimeModels(w http.ResponseWriter, r *http.Reques
 // modelsForProvider returns a static list of known models for the given provider.
 // This avoids the complexity of querying the daemon in real-time while still
 // providing useful model suggestions to the frontend.
+// Models are ordered with the most commonly available/recommended first.
 func modelsForProvider(provider string) []string {
 	switch provider {
 	case "claude":
 		return []string{
-			"claude-sonnet-4-20250514",
-			"claude-opus-4-20250514",
-			"claude-3-5-haiku-20241022",
+			"claude-opus-4-8",
+			"claude-sonnet-4-6",
+			"claude-haiku-4-5",
 		}
 	case "gemini":
 		return []string{
+			"gemini-3.1-pro-preview",
+			"gemini-3-flash-preview",
+			"gemini-3.1-flash-lite-preview",
 			"gemini-2.5-pro",
 			"gemini-2.5-flash",
-			"gemini-2.0-flash",
+			"gemini-2.5-flash-lite",
+			"gemma-4-31b-it",
+			"gemma-4-26b-a4b-it",
 		}
 	case "codex":
 		return []string{
@@ -83,9 +89,20 @@ func modelsForProvider(provider string) []string {
 		}
 	case "opencode":
 		return []string{
-			"anthropic/claude-sonnet-4-20250514",
-			"openai/gpt-4.1",
-			"anthropic/claude-3-5-haiku-20241022",
+			"opencode/big-pickle",
+			"opencode/deepseek-v4-flash-free",
+			"opencode/mimo-v2.5-free",
+			"opencode/nemotron-3-super-free",
+			"github-copilot/claude-sonnet-4.5",
+			"github-copilot/claude-sonnet-4.6",
+			"github-copilot/claude-opus-4.5",
+			"github-copilot/gemini-2.5-pro",
+			"github-copilot/gpt-4.1",
+			"github-copilot/gpt-4o",
+			"kiro/claude-sonnet-4",
+			"kiro/claude-sonnet-4.5",
+			"kiro/claude-opus-4.5",
+			"kiro/auto",
 		}
 	case "copilot":
 		return []string{
@@ -103,6 +120,7 @@ func modelsForProvider(provider string) []string {
 	case "kiro":
 		return []string{
 			"claude-sonnet-4-20250514",
+			"claude-sonnet-4-6",
 		}
 	case "hermes":
 		return []string{

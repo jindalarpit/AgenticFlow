@@ -1,6 +1,6 @@
 -- name: CreateAgent :one
-INSERT INTO agent (user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, mcp_config)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO agent (user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, mcp_config, runtime_mode, provider_id, deliverable_type_id)
+VALUES ($1, $2, $3, $4, sqlc.narg('runtime_id'), $5, $6, $7, $8, $9, $10, $11, $12, sqlc.narg('provider_id'), sqlc.narg('deliverable_type_id'))
 RETURNING *;
 
 -- name: GetAgent :one
@@ -16,7 +16,7 @@ UPDATE agent SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
-    runtime_id = COALESCE(sqlc.narg('runtime_id'), runtime_id),
+    runtime_id = CASE WHEN sqlc.arg('set_runtime_id')::boolean THEN sqlc.narg('runtime_id') ELSE runtime_id END,
     model = COALESCE(sqlc.narg('model'), model),
     custom_env = COALESCE(sqlc.narg('custom_env'), custom_env),
     custom_args = COALESCE(sqlc.narg('custom_args'), custom_args),
@@ -24,6 +24,9 @@ UPDATE agent SET
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     avatar_url = COALESCE(sqlc.narg('avatar_url'), avatar_url),
     mcp_config = CASE WHEN sqlc.arg('set_mcp_config')::boolean THEN sqlc.narg('mcp_config') ELSE mcp_config END,
+    runtime_mode = COALESCE(sqlc.narg('runtime_mode'), runtime_mode),
+    provider_id = CASE WHEN sqlc.arg('set_provider_id')::boolean THEN sqlc.narg('provider_id') ELSE provider_id END,
+    deliverable_type_id = CASE WHEN sqlc.arg('set_deliverable_type_id')::boolean THEN sqlc.narg('deliverable_type_id') ELSE deliverable_type_id END,
     updated_at = now()
 WHERE id = @id AND user_id = @user_id
 RETURNING *;
@@ -62,6 +65,11 @@ SELECT a.* FROM agent a
 JOIN task t ON t.agent_id = a.id
 WHERE t.id = $1;
 
+-- name: ListAgentsByProvider :many
+SELECT * FROM agent
+WHERE provider_id = $1
+ORDER BY created_at ASC;
+
 -- name: UpdateAgentStatus :exec
 UPDATE agent SET status = @status, updated_at = now() WHERE id = @id;
 
@@ -76,6 +84,7 @@ WHERE id = (
     JOIN agent a ON t.agent_id = a.id
     WHERE t.status = 'pending'
       AND a.runtime_id = $1
+      AND a.runtime_mode = 'local'
       AND (SELECT COUNT(*) FROM task t2 WHERE t2.agent_id = a.id AND t2.status = 'running') < a.max_concurrent_tasks
     ORDER BY t.created_at ASC
     LIMIT 1

@@ -1,6 +1,12 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { useSkills, type Skill } from "../hooks/useSkills";
+import {
+  useSkillTemplates,
+  useInstantiateTemplate,
+  type SkillTemplateSummary,
+} from "../hooks/useSkillTemplates";
+import { useToast } from "../components/Toast";
 
 /**
  * Skills list page at `/skills`.
@@ -31,12 +37,20 @@ export default function SkillList() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold text-gray-900">Skills</h2>
-        <Link
-          to="/skills/new"
-          className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-        >
-          + New Skill
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/skills/library"
+            className="inline-flex items-center px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          >
+            Skill Library
+          </Link>
+          <Link
+            to="/skills/new"
+            className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          >
+            + New Skill
+          </Link>
+        </div>
       </div>
 
       {/* Search */}
@@ -137,6 +151,37 @@ function LoadingSkeleton() {
 /* ─── Empty State ─── */
 
 function EmptyState() {
+  const { data: templates, isLoading: templatesLoading } = useSkillTemplates();
+  const instantiate = useInstantiateTemplate();
+  const { showToast } = useToast();
+  const [instantiatingSlug, setInstantiatingSlug] = useState<string | null>(null);
+
+  const displayTemplates = useMemo(() => {
+    if (!templates) return [];
+    return templates.slice(0, 6);
+  }, [templates]);
+
+  const handleAdd = useCallback(
+    (slug: string) => {
+      setInstantiatingSlug(slug);
+      instantiate.mutate(slug, {
+        onSuccess: () => {
+          showToast("Skill added to your collection!", "success");
+          setInstantiatingSlug(null);
+        },
+        onError: (err: Error) => {
+          if (err.message?.includes("already") || err.message?.includes("409")) {
+            showToast("This skill name is already in use", "error");
+          } else {
+            showToast("Failed to add skill. Please try again.", "error");
+          }
+          setInstantiatingSlug(null);
+        },
+      });
+    },
+    [instantiate, showToast]
+  );
+
   return (
     <div className="text-center py-16">
       <div className="text-4xl mb-4">📚</div>
@@ -146,12 +191,86 @@ function EmptyState() {
         coding standards, or workflow instructions to your agents during task
         execution.
       </p>
-      <Link
-        to="/skills/new"
-        className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+
+      {/* Template suggestions */}
+      {!templatesLoading && displayTemplates.length > 0 && (
+        <div className="mt-8 max-w-3xl mx-auto">
+          <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">
+            Get started with a template
+          </h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-left">
+            {displayTemplates.map((template) => (
+              <EmptyStateTemplateCard
+                key={template.id}
+                template={template}
+                isInstantiating={instantiatingSlug === template.slug}
+                onAdd={handleAdd}
+              />
+            ))}
+          </div>
+          <div className="mt-4">
+            <Link
+              to="/skills/library"
+              className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+            >
+              Browse All Templates →
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* Create custom skill button */}
+      <div className="mt-6">
+        <Link
+          to="/skills/new"
+          className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+        >
+          + Create Custom Skill
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Empty State Template Card ─── */
+
+function EmptyStateTemplateCard({
+  template,
+  isInstantiating,
+  onAdd,
+}: {
+  template: SkillTemplateSummary;
+  isInstantiating: boolean;
+  onAdd: (slug: string) => void;
+}) {
+  const truncatedDescription = template.description
+    ? template.description.length > 100
+      ? template.description.slice(0, 100) + "…"
+      : template.description
+    : null;
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-3 flex flex-col">
+      <div className="flex items-start gap-2 mb-1">
+        {template.icon && (
+          <span className="text-xl flex-shrink-0">{template.icon}</span>
+        )}
+        <h5 className="font-medium text-gray-900 text-sm truncate">
+          {template.name}
+        </h5>
+      </div>
+      {truncatedDescription && (
+        <p className="text-xs text-gray-500 mb-2 flex-1">
+          {truncatedDescription}
+        </p>
+      )}
+      <button
+        onClick={() => onAdd(template.slug)}
+        disabled={isInstantiating}
+        className="mt-auto inline-flex items-center px-2.5 py-1 bg-blue-600 text-white text-xs font-medium rounded hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed self-start"
       >
-        + Create Skill
-      </Link>
+        {isInstantiating ? "Adding…" : "Add"}
+      </button>
     </div>
   );
 }

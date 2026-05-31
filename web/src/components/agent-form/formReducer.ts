@@ -7,7 +7,10 @@ function isEqual(a: AgentFormValues, b: AgentFormValues): boolean {
   if (a.name !== b.name) return false;
   if (a.description !== b.description) return false;
   if (a.instructions !== b.instructions) return false;
+  if (a.runtime_mode !== b.runtime_mode) return false;
   if (a.runtime_id !== b.runtime_id) return false;
+  if (a.provider_id !== b.provider_id) return false;
+  if (a.deliverable_type_id !== b.deliverable_type_id) return false;
   if (a.model !== b.model) return false;
   if (a.max_concurrent_tasks !== b.max_concurrent_tasks) return false;
   if (a.visibility !== b.visibility) return false;

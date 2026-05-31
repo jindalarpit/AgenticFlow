@@ -13,6 +13,7 @@ function createMockAgent(overrides: Partial<Agent> = {}): Agent {
     description: "A test agent for unit testing",
     instructions: "Do things",
     avatar_url: null,
+    runtime_mode: "local",
     runtime_id: "rt-1",
     runtime_name: "Claude CLI",
     custom_env: {},

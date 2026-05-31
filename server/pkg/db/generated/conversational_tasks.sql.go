@@ -14,7 +14,7 @@ import (
 const createConversationalTask = `-- name: CreateConversationalTask :one
 INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id
 `
 
 type CreateConversationalTaskParams struct {
@@ -63,6 +63,8 @@ func (q *Queries) CreateConversationalTask(ctx context.Context, arg CreateConver
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }
@@ -103,7 +105,7 @@ func (q *Queries) CreateConversationalTaskStage(ctx context.Context, arg CreateC
 const createFollowUpTask = `-- name: CreateFollowUpTask :one
 INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id
 `
 
 type CreateFollowUpTaskParams struct {
@@ -151,6 +153,8 @@ func (q *Queries) CreateFollowUpTask(ctx context.Context, arg CreateFollowUpTask
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }

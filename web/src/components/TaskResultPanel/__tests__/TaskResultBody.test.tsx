@@ -22,6 +22,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     completed_at: "2025-01-01T00:01:00Z",
     created_at: "2025-01-01T00:00:00Z",
     updated_at: "2025-01-01T00:01:00Z",
+    token_usage: null,
     ...overrides,
   };
 }

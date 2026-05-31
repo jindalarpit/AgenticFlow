@@ -20,13 +20,21 @@ const maxPromptLength = 32000
 // TaskService encapsulates business logic for task creation, listing,
 // retrieval, cancellation, and status transitions.
 type TaskService struct {
-	q   db.Querier
-	hub *realtime.Hub
+	q               db.Querier
+	hub             *realtime.Hub
+	onlineExecution *OnlineExecutionEngine
 }
 
 // NewTaskService creates a new TaskService.
 func NewTaskService(q db.Querier, hub *realtime.Hub) *TaskService {
 	return &TaskService{q: q, hub: hub}
+}
+
+// SetOnlineExecutionEngine sets the OnlineExecutionEngine used for routing
+// tasks to online providers. This is set after construction to allow flexible
+// initialization ordering.
+func (s *TaskService) SetOnlineExecutionEngine(engine *OnlineExecutionEngine) {
+	s.onlineExecution = engine
 }
 
 // ---------------------------------------------------------------------------
@@ -67,14 +75,20 @@ func (s *TaskService) Create(ctx context.Context, params CreateTaskParams) (db.T
 			return db.Task{}, Validation("agent not found")
 		}
 
-		runtime, err := s.q.GetRuntimeByID(ctx, agent.RuntimeID)
-		if err != nil {
-			slog.Warn("create task: agent runtime not found, using provided agent_type",
-				"agent_id", uuidToString(params.AgentID),
-				"runtime_id", uuidToString(agent.RuntimeID),
-				"error", err)
-		} else {
-			agentType = runtime.Provider
+		// For online agents, use "online" as the agent_type placeholder.
+		// For local agents, resolve the runtime provider.
+		if agent.RuntimeMode == "online" {
+			agentType = "online"
+		} else if agent.RuntimeID.Valid {
+			runtime, err := s.q.GetRuntimeByID(ctx, agent.RuntimeID)
+			if err != nil {
+				slog.Warn("create task: agent runtime not found, using provided agent_type",
+					"agent_id", uuidToString(params.AgentID),
+					"runtime_id", uuidToString(agent.RuntimeID),
+					"error", err)
+			} else {
+				agentType = runtime.Provider
+			}
 		}
 	}
 
@@ -168,12 +182,148 @@ func (s *TaskService) Create(ctx context.Context, params CreateTaskParams) (db.T
 		})
 	}
 
+	// --- Traffic routing based on agent's RuntimeMode ---
+	if params.AgentID.Valid {
+		agent, agentErr := s.q.GetAgent(ctx, params.AgentID)
+		if agentErr == nil && agent.RuntimeMode == "online" {
+			// Online agent: route to server-side execution
+			if svcErr := s.routeOnlineTask(ctx, task, agent); svcErr != nil {
+				// Task was already marked as failed by routeOnlineTask
+				// Re-fetch the task to return the updated status
+				updatedTask, fetchErr := s.q.GetTaskByID(ctx, task.ID)
+				if fetchErr == nil {
+					return updatedTask, nil
+				}
+				return task, nil
+			}
+			return task, nil
+		}
+	}
+
+	// Local agent (or no agent): existing daemon polling flow.
 	// Notify the target daemon via WebSocket push if connected.
 	if s.hub != nil && params.AgentID.Valid {
 		s.notifyDaemon(ctx, task)
 	}
 
 	return task, nil
+}
+
+// ---------------------------------------------------------------------------
+// routeOnlineTask
+// ---------------------------------------------------------------------------
+
+// routeOnlineTask handles routing a task to an online provider. It validates
+// the provider is active, checks for Code Execution incompatibility, sets the
+// task status to "running", broadcasts "task_started", and launches a goroutine
+// to execute the task via the OnlineExecutionEngine.
+//
+// Returns a ServiceError if the task should be immediately failed (provider
+// unavailable, code execution rejection). In these cases, the task status is
+// already set to "failed" before returning.
+func (s *TaskService) routeOnlineTask(ctx context.Context, task db.Task, agent db.Agent) *ServiceError {
+	taskIDStr := uuidToString(task.ID)
+
+	// --- Check for Code Execution + online incompatibility ---
+	if agent.DeliverableTypeID.Valid {
+		dt, err := s.q.GetDeliverableType(ctx, db.GetDeliverableTypeParams{
+			ID:     agent.DeliverableTypeID,
+			UserID: agent.UserID,
+		})
+		if err == nil && dt.Name == "Code Execution" {
+			// Synchronously fail the task
+			errMsg := "code execution is not supported for online providers"
+			_ = s.q.UpdateTaskFailed(ctx, db.UpdateTaskFailedParams{
+				ID:           task.ID,
+				ExitCode:     pgtype.Int4{Int32: 1, Valid: true},
+				ErrorMessage: pgtype.Text{String: errMsg, Valid: true},
+			})
+			if s.hub != nil {
+				s.hub.BroadcastTaskFailed(taskIDStr, 1, errMsg, "")
+			}
+			return Validation(errMsg)
+		}
+	}
+
+	// --- Validate provider is active ---
+	if !agent.ProviderID.Valid {
+		errMsg := "provider not found"
+		_ = s.q.UpdateTaskFailed(ctx, db.UpdateTaskFailedParams{
+			ID:           task.ID,
+			ExitCode:     pgtype.Int4{Int32: 1, Valid: true},
+			ErrorMessage: pgtype.Text{String: errMsg, Valid: true},
+		})
+		if s.hub != nil {
+			s.hub.BroadcastTaskFailed(taskIDStr, 1, errMsg, "")
+		}
+		return Validation(errMsg)
+	}
+
+	prov, err := s.q.GetProvider(ctx, db.GetProviderParams{
+		ID:     agent.ProviderID,
+		UserID: agent.UserID,
+	})
+	if err != nil {
+		errMsg := "provider not found"
+		_ = s.q.UpdateTaskFailed(ctx, db.UpdateTaskFailedParams{
+			ID:           task.ID,
+			ExitCode:     pgtype.Int4{Int32: 1, Valid: true},
+			ErrorMessage: pgtype.Text{String: errMsg, Valid: true},
+		})
+		if s.hub != nil {
+			s.hub.BroadcastTaskFailed(taskIDStr, 1, errMsg, "")
+		}
+		return Validation(errMsg)
+	}
+
+	if prov.Status != "active" {
+		errMsg := fmt.Sprintf("provider is unavailable: status is %s", prov.Status)
+		_ = s.q.UpdateTaskFailed(ctx, db.UpdateTaskFailedParams{
+			ID:           task.ID,
+			ExitCode:     pgtype.Int4{Int32: 1, Valid: true},
+			ErrorMessage: pgtype.Text{String: errMsg, Valid: true},
+		})
+		if s.hub != nil {
+			s.hub.BroadcastTaskFailed(taskIDStr, 1, errMsg, "")
+		}
+		return Validation(errMsg)
+	}
+
+	// --- Set task status to "running" ---
+	err = s.q.UpdateTaskStatus(ctx, db.UpdateTaskStatusParams{
+		ID:     task.ID,
+		Status: "running",
+	})
+	if err != nil {
+		slog.Error("routeOnlineTask: failed to set task to running",
+			"task_id", taskIDStr, "error", err)
+		return Internal("failed to update task status")
+	}
+
+	// --- Broadcast "task_started" ---
+	if s.hub != nil {
+		s.hub.BroadcastTaskStarted(taskIDStr, "", "")
+	}
+
+	// --- Launch goroutine for online execution ---
+	if s.onlineExecution != nil {
+		go s.onlineExecution.Execute(context.Background(), task, agent)
+	} else {
+		slog.Error("routeOnlineTask: OnlineExecutionEngine not configured",
+			"task_id", taskIDStr)
+		errMsg := "online execution engine not available"
+		_ = s.q.UpdateTaskFailed(ctx, db.UpdateTaskFailedParams{
+			ID:           task.ID,
+			ExitCode:     pgtype.Int4{Int32: 1, Valid: true},
+			ErrorMessage: pgtype.Text{String: errMsg, Valid: true},
+		})
+		if s.hub != nil {
+			s.hub.BroadcastTaskFailed(taskIDStr, 1, errMsg, "")
+		}
+		return Internal(errMsg)
+	}
+
+	return nil
 }
 
 // ---------------------------------------------------------------------------

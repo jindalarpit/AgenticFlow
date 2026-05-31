@@ -141,13 +141,20 @@ func (d *Daemon) executeTaskStructuredSinglePass(ctx context.Context, task *Poll
 	reporter := &realHTTPMessageReporter{client: d.client}
 	batchReporter := NewBatchReporter(reporter, taskID, defaultFlushInterval, logger)
 
+	// Use a done channel to ensure all messages are consumed before closing
+	// the batch reporter. Without this, there's a race: the result can arrive
+	// before the consumer goroutine has drained the buffered messages channel,
+	// causing text content to be silently dropped.
+	msgsDone := make(chan struct{})
 	go func() {
+		defer close(msgsDone)
 		for msg := range session.Messages {
 			batchReporter.Feed(msg)
 		}
 	}()
 
 	result := <-session.Result
+	<-msgsDone // Wait for all messages to be fed before final flush
 	batchReporter.Close()
 
 	if len(result.Usage) > 0 {

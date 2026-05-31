@@ -69,13 +69,12 @@ vi.mock("../../contexts/WebSocketContext", () => ({
 
 vi.mock("../../lib/taskResultUtils", () => ({
   extractDashboardResult: (messages: TaskMessage[], outputPreview: string | null) => {
-    const stdout = messages.filter((m) => m.stream === "stdout");
+    const stdout = messages
+      .filter((m) => m.stream === "stdout")
+      .sort((a, b) => a.sequence - b.sequence);
     if (stdout.length > 0) {
-      let highest = stdout[0]!;
-      for (const m of stdout) {
-        if (m.sequence > highest.sequence) highest = m;
-      }
-      return highest.content;
+      const fullOutput = stdout.map((m) => m.content).join("");
+      return fullOutput || null;
     }
     return outputPreview ?? null;
   },
@@ -105,6 +104,7 @@ function createTask(overrides: Partial<Task> = {}): Task {
     completed_at: null,
     created_at: "2025-01-01T00:00:00Z",
     updated_at: "2025-01-01T00:00:00Z",
+    token_usage: null,
     ...overrides,
   };
 }

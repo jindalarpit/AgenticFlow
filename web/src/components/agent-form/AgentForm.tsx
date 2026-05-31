@@ -1,6 +1,6 @@
 import { useReducer, useCallback, useRef, useState, useMemo } from "react";
 
-import type { AgentFormProps, AgentFormValues } from "./types";
+import type { AgentFormProps, AgentFormValues, RuntimeMode } from "./types";
 import { createFormReducer, createInitialState } from "./formReducer";
 import { validateForm, validateField } from "./validateForm";
 import { RuntimeSelector } from "./RuntimeSelector";
@@ -9,6 +9,8 @@ import { KeyValueEditor } from "./KeyValueEditor";
 import { ArrayEditor } from "./ArrayEditor";
 import { McpConfigEditor } from "./McpConfigEditor";
 import { SkillsPicker } from "./SkillsPicker";
+import { OnlineProviderSection } from "./OnlineProviderSection";
+import { DeliverableTypeSelector } from "./DeliverableTypeSelector";
 
 import { useCreateAgent } from "../../hooks/useCreateAgent";
 import { useUpdateAgent } from "../../hooks/useAgentDetail";
@@ -43,10 +45,6 @@ export function AgentForm({
   const updateAgent = useUpdateAgent(agentId || "");
   const setAgentSkills = useSetAgentSkills(agentId || "");
 
-  // Dirty-state tracking (navigation guard via beforeunload)
-  // useBlocker is not available in this react-router version
-  // so we use the browser's beforeunload event as a fallback
-
   // ─── Field Handlers ───
 
   const handleFieldChange = useCallback(
@@ -59,7 +57,7 @@ export function AgentForm({
 
   const handleFieldBlur = useCallback(
     (field: keyof AgentFormValues) => {
-      const error = validateField(field, state.values[field]);
+      const error = validateField(field, state.values[field], state.values);
       if (error) {
         dispatch({ type: "SET_ERRORS", errors: { ...state.errors, [field]: error } });
       } else {
@@ -67,6 +65,40 @@ export function AgentForm({
       }
     },
     [state.values, state.errors]
+  );
+
+  // ─── Runtime Mode Toggle ───
+
+  const handleRuntimeModeChange = useCallback(
+    (newMode: RuntimeMode) => {
+      handleFieldChange("runtime_mode", newMode);
+      // Clear mode-specific fields when switching
+      if (newMode === "online") {
+        handleFieldChange("runtime_id", "");
+        // Clear runtime_id error
+        dispatch({ type: "CLEAR_ERROR", field: "runtime_id" });
+      } else {
+        handleFieldChange("provider_id", "");
+        handleFieldChange("model", "");
+        // Clear online-specific errors
+        dispatch({ type: "CLEAR_ERROR", field: "provider_id" });
+        dispatch({ type: "CLEAR_ERROR", field: "model" });
+      }
+      // Reset deliverable type when switching modes
+      handleFieldChange("deliverable_type_id", "");
+    },
+    [handleFieldChange]
+  );
+
+  // ─── Online Provider Handlers ───
+
+  const handleProviderChange = useCallback(
+    (providerId: string) => {
+      handleFieldChange("provider_id", providerId);
+      // Clear model when provider changes (models list changes)
+      handleFieldChange("model", "");
+    },
+    [handleFieldChange]
   );
 
   // ─── Submission ───
@@ -92,15 +124,41 @@ export function AgentForm({
         // Prepare agent data (exclude skill_ids — separate endpoint)
         const { skill_ids, ...agentData } = state.values;
 
+        // Build the payload: only include relevant fields based on runtime_mode
+        const payload: Record<string, unknown> = {
+          name: agentData.name,
+          description: agentData.description,
+          instructions: agentData.instructions,
+          runtime_mode: agentData.runtime_mode,
+          model: agentData.model,
+          custom_env: agentData.custom_env,
+          custom_args: agentData.custom_args,
+          max_concurrent_tasks: agentData.max_concurrent_tasks,
+          visibility: agentData.visibility,
+          mcp_config: agentData.mcp_config,
+        };
+
+        if (agentData.runtime_mode === "local") {
+          payload.runtime_id = agentData.runtime_id;
+          if (agentData.deliverable_type_id) {
+            payload.deliverable_type_id = agentData.deliverable_type_id;
+          }
+        } else {
+          payload.provider_id = agentData.provider_id;
+          if (agentData.deliverable_type_id) {
+            payload.deliverable_type_id = agentData.deliverable_type_id;
+          }
+        }
+
         let savedAgentId = agentId;
 
         if (mode === "edit" && agentId) {
           // Edit mode: PUT /api/agents/:id
-          const updated = await updateAgent.mutateAsync(agentData);
+          const updated = await updateAgent.mutateAsync(payload as any);
           savedAgentId = updated.id;
         } else {
           // Create mode: POST /api/agents
-          const created = await createAgent.mutateAsync(agentData);
+          const created = await createAgent.mutateAsync(payload as any);
           savedAgentId = created.id;
         }
 
@@ -147,6 +205,15 @@ export function AgentForm({
             type: "SET_ERRORS",
             errors: { ...state.errors, name: "Name already taken" },
           });
+        } else if (message.includes("422") && message.toLowerCase().includes("code execution")) {
+          dispatch({
+            type: "SET_ERRORS",
+            errors: {
+              ...state.errors,
+              deliverable_type_id:
+                "Online agents cannot use the Code Execution deliverable type",
+            },
+          });
         } else {
           showToast(
             message || "An error occurred while saving. Please try again.",
@@ -172,6 +239,8 @@ export function AgentForm({
   );
 
   // ─── Render ───
+
+  const isOnline = state.values.runtime_mode === "online";
 
   return (
     <form
@@ -249,26 +318,90 @@ export function AgentForm({
           />
         </div>
 
-        {/* Runtime */}
-        <RuntimeSelector
-          value={state.values.runtime_id}
-          onChange={(runtimeId) => {
-            handleFieldChange("runtime_id", runtimeId);
-            // Clear model when runtime changes
-            if (runtimeId !== state.values.runtime_id) {
-              handleFieldChange("model", "");
-            }
-          }}
-          error={state.errors.runtime_id}
-        />
+        {/* Runtime Mode Toggle */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700">
+            Runtime Mode <span className="text-red-500">*</span>
+          </label>
+          <div className="flex rounded-md border border-gray-300 overflow-hidden w-fit">
+            <button
+              type="button"
+              onClick={() => handleRuntimeModeChange("local")}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                !isOnline
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-gray-700 hover:bg-gray-50"
+              }`}
+              aria-pressed={!isOnline}
+            >
+              Local
+            </button>
+            <button
+              type="button"
+              onClick={() => handleRuntimeModeChange("online")}
+              className={`px-4 py-2 text-sm font-medium border-l border-gray-300 transition-colors ${
+                isOnline
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-gray-700 hover:bg-gray-50"
+              }`}
+              aria-pressed={isOnline}
+            >
+              Online
+            </button>
+          </div>
+          <p className="text-xs text-gray-500">
+            {isOnline
+              ? "Online agents use cloud AI providers (OpenAI, Anthropic, etc.) without requiring a local daemon."
+              : "Local agents execute tasks via a connected daemon runtime on your machine."}
+          </p>
+        </div>
 
-        {/* Model */}
-        <ModelDropdown
-          runtimeId={state.values.runtime_id}
-          value={state.values.model}
-          onChange={(model) => handleFieldChange("model", model)}
-          error={state.errors.model}
-        />
+        {/* Conditional: Local Mode Fields */}
+        {!isOnline && (
+          <>
+            {/* Runtime */}
+            <RuntimeSelector
+              value={state.values.runtime_id}
+              onChange={(runtimeId) => {
+                handleFieldChange("runtime_id", runtimeId);
+                // Clear model when runtime changes
+                if (runtimeId !== state.values.runtime_id) {
+                  handleFieldChange("model", "");
+                }
+              }}
+              error={state.errors.runtime_id}
+            />
+
+            {/* Model */}
+            <ModelDropdown
+              runtimeId={state.values.runtime_id}
+              value={state.values.model}
+              onChange={(model) => handleFieldChange("model", model)}
+              error={state.errors.model}
+            />
+
+            {/* Deliverable Type (all types including Code Execution) */}
+            <DeliverableTypeSelector
+              value={state.values.deliverable_type_id}
+              onChange={(dtId) => handleFieldChange("deliverable_type_id", dtId)}
+            />
+          </>
+        )}
+
+        {/* Conditional: Online Mode Fields */}
+        {isOnline && (
+          <OnlineProviderSection
+            providerId={state.values.provider_id}
+            model={state.values.model}
+            deliverableTypeId={state.values.deliverable_type_id}
+            onProviderChange={handleProviderChange}
+            onModelChange={(model) => handleFieldChange("model", model)}
+            onDeliverableTypeChange={(dtId) =>
+              handleFieldChange("deliverable_type_id", dtId)
+            }
+            errors={state.errors}
+          />
+        )}
 
         {/* Max Concurrent Tasks */}
         <div className="space-y-1">

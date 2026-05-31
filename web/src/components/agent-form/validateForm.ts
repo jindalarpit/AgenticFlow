@@ -21,9 +21,23 @@ export function validateForm(values: AgentFormValues): Record<string, string> {
     errors.description = "Description must be 255 characters or fewer";
   }
 
-  // Runtime: required
-  if (!values.runtime_id) {
-    errors.runtime_id = "Runtime is required";
+  // Runtime mode specific validation
+  if (values.runtime_mode === "local") {
+    // Runtime: required for local mode
+    if (!values.runtime_id) {
+      errors.runtime_id = "Runtime is required";
+    }
+  } else if (values.runtime_mode === "online") {
+    // Provider: required for online mode
+    if (!values.provider_id) {
+      errors.provider_id = "Provider is required";
+    }
+    // Model: required for online mode
+    if (!values.model) {
+      errors.model = "Model is required for online agents";
+    } else if (values.model.length > 100) {
+      errors.model = "Model must be 100 characters or fewer";
+    }
   }
 
   // Max concurrent tasks: 1-20
@@ -58,7 +72,8 @@ export function validateForm(values: AgentFormValues): Record<string, string> {
  */
 export function validateField(
   field: keyof AgentFormValues,
-  value: unknown
+  value: unknown,
+  allValues?: AgentFormValues
 ): string | undefined {
   switch (field) {
     case "name": {
@@ -74,7 +89,24 @@ export function validateField(
     }
     case "runtime_id": {
       const v = value as string;
+      // Only required in local mode
+      if (allValues && allValues.runtime_mode === "online") return undefined;
       if (!v) return "Runtime is required";
+      return undefined;
+    }
+    case "provider_id": {
+      const v = value as string;
+      // Only required in online mode
+      if (allValues && allValues.runtime_mode === "local") return undefined;
+      if (!v) return "Provider is required";
+      return undefined;
+    }
+    case "model": {
+      const v = value as string;
+      if (allValues && allValues.runtime_mode === "online") {
+        if (!v) return "Model is required for online agents";
+        if (v.length > 100) return "Model must be 100 characters or fewer";
+      }
       return undefined;
     }
     case "max_concurrent_tasks": {

@@ -13,3 +13,4 @@ export { ViewModeToggle } from "./ViewModeToggle";
 export { SortDirectionToggle } from "./SortDirectionToggle";
 export type { SortDirection } from "./SortDirectionToggle";
 export { MetadataChips } from "./MetadataChips";
+export { TokenUsageDisplay } from "./TokenUsageDisplay";

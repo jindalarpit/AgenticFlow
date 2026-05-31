@@ -15,23 +15,40 @@ type Querier interface {
 	CancelTask(ctx context.Context, arg CancelTaskParams) error
 	ClaimPendingTask(ctx context.Context, arg ClaimPendingTaskParams) (Task, error)
 	ClaimPendingTaskForRuntime(ctx context.Context, arg ClaimPendingTaskForRuntimeParams) (Task, error)
+	// Claims the next pending task that has a pending stage ready for execution.
+	// Used by the daemon to pick up staged tasks where the next stage is pending.
 	ClaimPendingTaskWithStage(ctx context.Context, arg ClaimPendingTaskWithStageParams) (Task, error)
 	CountActiveTasksForAgent(ctx context.Context, agentID pgtype.UUID) (int64, error)
+	CountAgentsByDeliverableType(ctx context.Context, deliverableTypeID pgtype.UUID) (int64, error)
+	CountAgentsByProvider(ctx context.Context, providerID pgtype.UUID) (int64, error)
 	CountAgentsBySkill(ctx context.Context, skillID pgtype.UUID) (int64, error)
 	CountAgentsByUser(ctx context.Context, userID pgtype.UUID) (int64, error)
+	// Returns the count of tasks with status 'running' for a given agent.
+	CountRunningTasksByAgent(ctx context.Context, agentID pgtype.UUID) (int64, error)
 	CountToolUseMessages(ctx context.Context, taskID pgtype.UUID) (int64, error)
 	CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error)
+	// Creates a task for the conversational workflow model.
+	// The deliverables column stores prior_context as a JSON array of strings.
+	// git_repo_url and workspace_path store workspace config for execution tasks.
 	CreateConversationalTask(ctx context.Context, arg CreateConversationalTaskParams) (Task, error)
+	// Creates a task_stage row for a conversational task with a specific deliverable_type.
 	CreateConversationalTaskStage(ctx context.Context, arg CreateConversationalTaskStageParams) (TaskStage, error)
+	CreateDeliverableType(ctx context.Context, arg CreateDeliverableTypeParams) (DeliverableType, error)
+	// Creates a new task for a follow-up message linked to an existing stage.
+	// The deliverables column stores prior_context, and workspace config is preserved.
 	CreateFollowUpTask(ctx context.Context, arg CreateFollowUpTaskParams) (Task, error)
 	CreatePersonalAccessToken(ctx context.Context, arg CreatePersonalAccessTokenParams) (PersonalAccessToken, error)
+	// Inserts a prompt_history row after a conversational task turn completes.
 	CreatePromptHistoryEntry(ctx context.Context, arg CreatePromptHistoryEntryParams) (PromptHistory, error)
+	CreateProvider(ctx context.Context, arg CreateProviderParams) (OnlineProvider, error)
 	CreateRuntime(ctx context.Context, arg CreateRuntimeParams) (AgentRuntime, error)
 	CreateSkill(ctx context.Context, arg CreateSkillParams) (Skill, error)
 	CreateSkillFile(ctx context.Context, arg CreateSkillFileParams) (SkillFile, error)
+	// Inserts a structured task message with type, tool, input, output fields.
 	CreateStructuredTaskMessage(ctx context.Context, arg CreateStructuredTaskMessageParams) (TaskMessage, error)
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	CreateTaskMessage(ctx context.Context, arg CreateTaskMessageParams) (TaskMessage, error)
+	// Inserts a task message, ignoring duplicates (same task_id + sequence).
 	CreateTaskMessageIdempotent(ctx context.Context, arg CreateTaskMessageIdempotentParams) (TaskMessage, error)
 	CreateTaskStage(ctx context.Context, arg CreateTaskStageParams) (TaskStage, error)
 	CreateTaskWithWorkflow(ctx context.Context, arg CreateTaskWithWorkflowParams) (Task, error)
@@ -39,6 +56,8 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteAgent(ctx context.Context, arg DeleteAgentParams) error
 	DeleteAllAgentSkills(ctx context.Context, agentID pgtype.UUID) error
+	DeleteDeliverableType(ctx context.Context, arg DeleteDeliverableTypeParams) error
+	DeleteProvider(ctx context.Context, arg DeleteProviderParams) error
 	DeleteRuntimesByDaemon(ctx context.Context, daemonID pgtype.UUID) error
 	DeleteSkill(ctx context.Context, arg DeleteSkillParams) error
 	DeleteSkillFilesBySkill(ctx context.Context, skillID pgtype.UUID) error
@@ -49,34 +68,56 @@ type Querier interface {
 	GetAgentByTaskID(ctx context.Context, id pgtype.UUID) (Agent, error)
 	GetAgentSkills(ctx context.Context, agentID pgtype.UUID) ([]GetAgentSkillsRow, error)
 	GetAgentSkillsWithFiles(ctx context.Context, agentID pgtype.UUID) ([]GetAgentSkillsWithFilesRow, error)
+	// Returns 30-day aggregate stats for a given agent: total completed tasks,
+	// total terminal tasks (completed + failed + cancelled), and average duration
+	// of completed tasks in milliseconds. Returns zeros when no matching tasks exist.
 	GetAgentStats30d(ctx context.Context, agentID pgtype.UUID) (GetAgentStats30dRow, error)
+	// Returns 7-day daily task completion and failure counts grouped by agent_id.
+	// Each row represents one day for one agent. Only agents with at least one
+	// completed or failed task in the last 7 days are included.
 	GetAgentsActivity7d(ctx context.Context) ([]GetAgentsActivity7dRow, error)
+	// Returns 30-day completed task count per agent for all agents that have
+	// at least one completed task in the last 30 days.
 	GetAgentsRunCounts30d(ctx context.Context) ([]GetAgentsRunCounts30dRow, error)
 	GetCompletedStagesForTask(ctx context.Context, taskID pgtype.UUID) ([]TaskStage, error)
 	GetDaemonByDaemonID(ctx context.Context, arg GetDaemonByDaemonIDParams) (Daemon, error)
 	GetDaemonByID(ctx context.Context, id pgtype.UUID) (Daemon, error)
+	GetDeliverableType(ctx context.Context, arg GetDeliverableTypeParams) (DeliverableType, error)
+	// Gets the most recent session_id and work_dir for a task_stage.
 	GetLatestSessionForStage(ctx context.Context, id pgtype.UUID) (GetLatestSessionForStageRow, error)
 	GetNextPendingStage(ctx context.Context, taskID pgtype.UUID) (TaskStage, error)
+	GetProvider(ctx context.Context, arg GetProviderParams) (OnlineProvider, error)
 	GetRuntimeByID(ctx context.Context, id pgtype.UUID) (AgentRuntime, error)
 	GetSkillByID(ctx context.Context, id pgtype.UUID) (Skill, error)
 	GetSkillByName(ctx context.Context, arg GetSkillByNameParams) (Skill, error)
 	GetSkillFilesWithContent(ctx context.Context, skillID pgtype.UUID) ([]SkillFile, error)
+	GetSkillTemplateBySlug(ctx context.Context, slug string) (SkillTemplate, error)
 	GetStageByTaskAndName(ctx context.Context, arg GetStageByTaskAndNameParams) (TaskStage, error)
+	GetSystemDeliverableTypeByName(ctx context.Context, name string) (DeliverableType, error)
 	GetTaskByID(ctx context.Context, id pgtype.UUID) (Task, error)
+	// Returns the daemon_id for a running task.
 	GetTaskDaemonID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
+	// Retrieves a specific task_stage by task ID and stage name.
 	GetTaskStageByTaskAndName(ctx context.Context, arg GetTaskStageByTaskAndNameParams) (TaskStage, error)
 	GetTokenByHash(ctx context.Context, tokenHash string) (PersonalAccessToken, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	InsertAgentSkill(ctx context.Context, arg InsertAgentSkillParams) error
 	ListAgentsByDaemon(ctx context.Context, daemonID pgtype.UUID) ([]Agent, error)
+	ListAgentsByProvider(ctx context.Context, providerID pgtype.UUID) ([]Agent, error)
 	ListAgentsByUser(ctx context.Context, userID pgtype.UUID) ([]Agent, error)
 	ListDaemonsByUser(ctx context.Context, userID pgtype.UUID) ([]Daemon, error)
+	ListDeliverableTypesByUser(ctx context.Context, userID pgtype.UUID) ([]DeliverableType, error)
 	ListOfflineDaemons(ctx context.Context, staleSeconds float64) ([]Daemon, error)
+	// Lists all prompt_history entries for a task_stage ordered by creation time.
 	ListPromptHistoryForStage(ctx context.Context, taskStageID pgtype.UUID) ([]PromptHistory, error)
+	ListProvidersByUser(ctx context.Context, userID pgtype.UUID) ([]OnlineProvider, error)
+	ListProvidersByUserAndStatus(ctx context.Context, arg ListProvidersByUserAndStatusParams) ([]OnlineProvider, error)
 	ListRuntimesByDaemon(ctx context.Context, daemonID pgtype.UUID) ([]AgentRuntime, error)
 	ListRuntimesByProvider(ctx context.Context, provider string) ([]AgentRuntime, error)
 	ListSkillFiles(ctx context.Context, skillID pgtype.UUID) ([]ListSkillFilesRow, error)
+	ListSkillTemplates(ctx context.Context) ([]ListSkillTemplatesRow, error)
+	ListSkillTemplatesByCategory(ctx context.Context, category string) ([]ListSkillTemplatesByCategoryRow, error)
 	ListSkillsByUser(ctx context.Context, userID pgtype.UUID) ([]ListSkillsByUserRow, error)
 	ListStagesForTask(ctx context.Context, taskID pgtype.UUID) ([]TaskStage, error)
 	ListTaskMessagesByTask(ctx context.Context, taskID pgtype.UUID) ([]TaskMessage, error)
@@ -88,9 +129,15 @@ type Querier interface {
 	UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusParams) error
 	UpdateDaemonHeartbeat(ctx context.Context, id pgtype.UUID) error
 	UpdateDaemonStatus(ctx context.Context, arg UpdateDaemonStatusParams) error
+	UpdateDeliverableType(ctx context.Context, arg UpdateDeliverableTypeParams) (DeliverableType, error)
+	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (OnlineProvider, error)
+	UpdateProviderModels(ctx context.Context, arg UpdateProviderModelsParams) error
+	UpdateProviderStatus(ctx context.Context, arg UpdateProviderStatusParams) error
+	UpdateRuntimeStatus(ctx context.Context, arg UpdateRuntimeStatusParams) error
 	UpdateSkill(ctx context.Context, arg UpdateSkillParams) (Skill, error)
-	UpdateStageFeedback(ctx context.Context, arg UpdateStageFeedbackParams) error
+	// Updates a task_stage on completion with output content, session_id, and work_dir.
 	UpdateStageCompletion(ctx context.Context, arg UpdateStageCompletionParams) error
+	UpdateStageFeedback(ctx context.Context, arg UpdateStageFeedbackParams) error
 	UpdateStageOutput(ctx context.Context, arg UpdateStageOutputParams) error
 	UpdateStageStatus(ctx context.Context, arg UpdateStageStatusParams) error
 	UpdateTaskCompleted(ctx context.Context, arg UpdateTaskCompletedParams) error
@@ -101,6 +148,7 @@ type Querier interface {
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
 	UpsertDaemon(ctx context.Context, arg UpsertDaemonParams) (Daemon, error)
 	UpsertRuntime(ctx context.Context, arg UpsertRuntimeParams) (AgentRuntime, error)
+	UpsertSkillTemplate(ctx context.Context, arg UpsertSkillTemplateParams) error
 }
 
 var _ Querier = (*Queries)(nil)

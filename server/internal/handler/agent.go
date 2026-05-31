@@ -46,6 +46,9 @@ type CreateAgentRequest struct {
 	Visibility         string            `json:"visibility"`
 	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
 	MCPConfig          json.RawMessage   `json:"mcp_config"`
+	RuntimeMode        string            `json:"runtime_mode"`
+	ProviderID         string            `json:"provider_id"`
+	DeliverableTypeID  string            `json:"deliverable_type_id"`
 }
 
 // AgentResponse is the public representation of an agent.
@@ -64,6 +67,9 @@ type AgentResponse struct {
 	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
 	OwnerID            string            `json:"owner_id"`
 	MCPConfig          json.RawMessage   `json:"mcp_config"`
+	RuntimeMode        string            `json:"runtime_mode"`
+	ProviderID         *string           `json:"provider_id"`
+	DeliverableTypeID  *string           `json:"deliverable_type_id"`
 	ArchivedAt         *string           `json:"archived_at"`
 	CreatedAt          string            `json:"created_at"`
 	UpdatedAt          string            `json:"updated_at"`
@@ -84,6 +90,7 @@ func toAgentResponse(a db.Agent) AgentResponse {
 		Status:             a.Status,
 		MaxConcurrentTasks: a.MaxConcurrentTasks,
 		OwnerID:            uuidToString(a.UserID),
+		RuntimeMode:        a.RuntimeMode,
 		CreatedAt:          a.CreatedAt.Time.UTC().Format(time.RFC3339),
 		UpdatedAt:          a.UpdatedAt.Time.UTC().Format(time.RFC3339),
 	}
@@ -98,6 +105,14 @@ func toAgentResponse(a db.Agent) AgentResponse {
 	if a.ArchivedAt.Valid {
 		s := a.ArchivedAt.Time.UTC().Format(time.RFC3339)
 		resp.ArchivedAt = &s
+	}
+	if a.ProviderID.Valid {
+		s := uuidToString(a.ProviderID)
+		resp.ProviderID = &s
+	}
+	if a.DeliverableTypeID.Valid {
+		s := uuidToString(a.DeliverableTypeID)
+		resp.DeliverableTypeID = &s
 	}
 	if len(a.CustomEnv) > 0 {
 		_ = json.Unmarshal(a.CustomEnv, &resp.CustomEnv)
@@ -145,6 +160,9 @@ func (h *AgentHandler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		Visibility:         req.Visibility,
 		MaxConcurrentTasks: req.MaxConcurrentTasks,
 		MCPConfig:          req.MCPConfig,
+		RuntimeMode:        req.RuntimeMode,
+		ProviderID:         req.ProviderID,
+		DeliverableTypeID:  req.DeliverableTypeID,
 	})
 	if svcErr != nil {
 		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)
@@ -208,6 +226,9 @@ type UpdateAgentRequest struct {
 	Visibility         *string            `json:"visibility"`
 	MaxConcurrentTasks *int32             `json:"max_concurrent_tasks"`
 	MCPConfig          json.RawMessage    `json:"mcp_config"`
+	RuntimeMode        *string            `json:"runtime_mode"`
+	ProviderID         *string            `json:"provider_id"`
+	DeliverableTypeID  *string            `json:"deliverable_type_id"`
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +304,9 @@ func (h *AgentHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrentTasks: req.MaxConcurrentTasks,
 		MCPConfig:          req.MCPConfig,
 		MCPConfigPresent:   mcpConfigPresent,
+		RuntimeMode:        req.RuntimeMode,
+		ProviderID:         req.ProviderID,
+		DeliverableTypeID:  req.DeliverableTypeID,
 	})
 	if svcErr != nil {
 		writeErrorJSON(w, svcErr.Kind.HTTPStatus(), svcErr.Message)

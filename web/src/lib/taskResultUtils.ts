@@ -33,9 +33,12 @@ const TRUNCATED_DISPLAY_LENGTH = 500;
  * Extract the final displayable result from task messages.
  *
  * Priority:
- * 1. Last stdout message content (highest sequence number among items with stream "stdout")
+ * 1. Concatenation of all stdout messages (sorted by sequence number)
  * 2. Task's output_preview field (fallback)
  * 3. null (no content available)
+ *
+ * The daemon streams output in chunks — each chunk is a separate message.
+ * The final result is the concatenation of all stdout chunks in order.
  */
 export function extractDashboardResult(
   messages: TaskMessage[],
@@ -45,14 +48,10 @@ export function extractDashboardResult(
   const stdoutMessages = messages.filter((msg) => msg.stream === "stdout");
 
   if (stdoutMessages.length > 0) {
-    // Find the message with the highest sequence number
-    let highest = stdoutMessages[0]!;
-    for (let i = 1; i < stdoutMessages.length; i++) {
-      if (stdoutMessages[i]!.sequence > highest.sequence) {
-        highest = stdoutMessages[i]!;
-      }
-    }
-    return highest.content;
+    // Sort by sequence and concatenate all content
+    const sorted = [...stdoutMessages].sort((a, b) => a.sequence - b.sequence);
+    const fullOutput = sorted.map((msg) => msg.content).join("");
+    return fullOutput || null;
   }
 
   // Fallback to output_preview

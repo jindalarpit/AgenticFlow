@@ -10,7 +10,10 @@ export interface CreateAgentRequest {
   name: string;
   description: string;
   instructions: string;
-  runtime_id: string;
+  runtime_mode: "local" | "online";
+  runtime_id?: string;
+  provider_id?: string;
+  deliverable_type_id?: string;
   model: string;
   custom_env: Record<string, string>;
   custom_args: string[];

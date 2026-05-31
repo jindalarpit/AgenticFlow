@@ -16,6 +16,10 @@ import SkillList from "./pages/SkillList";
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const AgentCreatePage = lazy(() => import("./pages/AgentCreatePage"));
 const AgentEditPage = lazy(() => import("./pages/AgentEditPage"));
+const SkillLibrary = lazy(() => import("./pages/SkillLibrary"));
+const SkillTemplateDetail = lazy(() => import("./pages/SkillTemplateDetail"));
+const ProvidersPage = lazy(() => import("./pages/Providers"));
+const DeliverableTypes = lazy(() => import("./pages/DeliverableTypes"));
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -148,12 +152,68 @@ export default function App() {
               }
             />
             <Route
+              path="/skills/library"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                        <SkillLibrary />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/skills/library/:slug"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                        <SkillTemplateDetail />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/skills/:id/edit"
               element={
                 <ProtectedRoute>
                   <Layout>
                     <ErrorBoundary>
                       <SkillForm />
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/deliverable-types"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                        <DeliverableTypes />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/providers"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ErrorBoundary>
+                      <Suspense fallback={<div className="p-8 text-gray-500">Loading...</div>}>
+                        <ProvidersPage />
+                      </Suspense>
                     </ErrorBoundary>
                   </Layout>
                 </ProtectedRoute>

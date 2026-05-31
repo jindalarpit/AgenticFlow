@@ -1,6 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
 export interface Task {
   id: string;
   user_id: string;
@@ -16,6 +22,7 @@ export interface Task {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  token_usage: TokenUsage | null;
 }
 
 export interface TaskMessage {

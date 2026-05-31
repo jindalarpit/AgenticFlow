@@ -1029,22 +1029,29 @@ func toRuntimeResponse(rt db.AgentRuntime, d db.Daemon) runtimeResponse {
 	return resp
 }
 
+type tokenUsageResponse struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type taskResponse struct {
-	ID             string  `json:"id"`
-	AgentType      string  `json:"agent_type"`
-	Prompt         string  `json:"prompt"`
-	Status         string  `json:"status"`
-	ExitCode       *int32  `json:"exit_code"`
-	ErrorMessage   *string `json:"error_message"`
-	OutputPreview  *string `json:"output_preview"`
-	AgentID        *string `json:"agent_id"`
-	AgentName      *string `json:"agent_name"`
-	AgentRuntimeID *string `json:"agent_runtime_id"`
-	DaemonID       *string `json:"daemon_id"`
-	StartedAt      *string `json:"started_at"`
-	CompletedAt    *string `json:"completed_at"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
+	ID             string              `json:"id"`
+	AgentType      string              `json:"agent_type"`
+	Prompt         string              `json:"prompt"`
+	Status         string              `json:"status"`
+	ExitCode       *int32              `json:"exit_code"`
+	ErrorMessage   *string             `json:"error_message"`
+	OutputPreview  *string             `json:"output_preview"`
+	AgentID        *string             `json:"agent_id"`
+	AgentName      *string             `json:"agent_name"`
+	AgentRuntimeID *string             `json:"agent_runtime_id"`
+	DaemonID       *string             `json:"daemon_id"`
+	StartedAt      *string             `json:"started_at"`
+	CompletedAt    *string             `json:"completed_at"`
+	CreatedAt      string              `json:"created_at"`
+	UpdatedAt      string              `json:"updated_at"`
+	TokenUsage     *tokenUsageResponse `json:"token_usage,omitempty"`
 }
 
 func toTaskResponse(t db.Task) taskResponse {
@@ -1084,6 +1091,12 @@ func toTaskResponse(t db.Task) taskResponse {
 	if t.CompletedAt.Valid {
 		s := t.CompletedAt.Time.UTC().Format(time.RFC3339)
 		resp.CompletedAt = &s
+	}
+	if len(t.TokenUsage) > 0 {
+		var usage tokenUsageResponse
+		if err := json.Unmarshal(t.TokenUsage, &usage); err == nil {
+			resp.TokenUsage = &usage
+		}
 	}
 	return resp
 }

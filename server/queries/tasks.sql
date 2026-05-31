@@ -1,11 +1,11 @@
 -- name: CreateTask :one
-INSERT INTO task (user_id, agent_type, prompt, agent_id)
-VALUES ($1, $2, $3, $4)
+INSERT INTO task (user_id, agent_type, prompt, agent_id, provider_id)
+VALUES ($1, $2, $3, $4, sqlc.narg('provider_id'))
 RETURNING *;
 
 -- name: CreateTaskWithWorkflow :one
-INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path, provider_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('provider_id'))
 RETURNING *;
 
 -- name: GetTaskByID :one
@@ -47,7 +47,7 @@ WHERE id = $3;
 
 -- name: UpdateTaskCompleted :exec
 UPDATE task
-SET status = 'completed', exit_code = $2, output_preview = $3, completed_at = now(), updated_at = now()
+SET status = 'completed', exit_code = $2, output_preview = $3, token_usage = sqlc.narg('token_usage'), completed_at = now(), updated_at = now()
 WHERE id = $1;
 
 -- name: UpdateTaskFailed :exec
@@ -70,6 +70,11 @@ WHERE id = $1 AND user_id = $2 AND status IN ('pending', 'running');
 -- Returns the daemon_id for a running task.
 SELECT daemon_id FROM task
 WHERE id = $1 AND status = 'running';
+
+-- name: CountRunningTasksByAgent :one
+-- Returns the count of tasks with status 'running' for a given agent.
+SELECT COUNT(*) FROM task
+WHERE agent_id = $1 AND status = 'running';
 
 -- name: GetAgentStats30d :one
 -- Returns 30-day aggregate stats for a given agent: total completed tasks,

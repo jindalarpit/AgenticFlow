@@ -156,6 +156,7 @@ const mockAgent: Agent = {
   description: "Test agent",
   instructions: "Be helpful",
   avatar_url: null,
+  runtime_mode: "local",
   runtime_id: "rt-001",
   runtime_name: "Local Runtime",
   custom_env: { API_KEY: "secret" },

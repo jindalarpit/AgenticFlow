@@ -252,13 +252,16 @@ func (d *Daemon) executeStage(ctx context.Context, task *PollResponse, currentSt
 	reporter := &realHTTPMessageReporter{client: d.client}
 	batchReporter := NewBatchReporter(reporter, taskID, defaultFlushInterval, logger)
 
+	msgsDone := make(chan struct{})
 	go func() {
+		defer close(msgsDone)
 		for msg := range session.Messages {
 			batchReporter.Feed(msg)
 		}
 	}()
 
 	result := <-session.Result
+	<-msgsDone
 	batchReporter.Close()
 
 	if len(result.Usage) > 0 {

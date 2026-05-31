@@ -14,7 +14,7 @@ import (
 const archiveAgent = `-- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), updated_at = now()
 WHERE id = $1 AND (user_id = $2 OR $3::boolean = true)
-RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config
+RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id
 `
 
 type ArchiveAgentParams struct {
@@ -44,22 +44,11 @@ func (q *Queries) ArchiveAgent(ctx context.Context, arg ArchiveAgentParams) (Age
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.McpConfig,
+		&i.RuntimeMode,
+		&i.ProviderID,
+		&i.DeliverableTypeID,
 	)
 	return i, err
-}
-
-const updateAgentStatus = `-- name: UpdateAgentStatus :exec
-UPDATE agent SET status = $1, updated_at = now() WHERE id = $2
-`
-
-type UpdateAgentStatusParams struct {
-	Status string      `json:"status"`
-	ID     pgtype.UUID `json:"id"`
-}
-
-func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusParams) error {
-	_, err := q.db.Exec(ctx, updateAgentStatus, arg.Status, arg.ID)
-	return err
 }
 
 const claimPendingTaskForRuntime = `-- name: ClaimPendingTaskForRuntime :one
@@ -73,12 +62,13 @@ WHERE id = (
     JOIN agent a ON t.agent_id = a.id
     WHERE t.status = 'pending'
       AND a.runtime_id = $1
+      AND a.runtime_mode = 'local'
       AND (SELECT COUNT(*) FROM task t2 WHERE t2.agent_id = a.id AND t2.status = 'running') < a.max_concurrent_tasks
     ORDER BY t.created_at ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id
 `
 
 type ClaimPendingTaskForRuntimeParams struct {
@@ -109,6 +99,8 @@ func (q *Queries) ClaimPendingTaskForRuntime(ctx context.Context, arg ClaimPendi
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }
@@ -137,9 +129,9 @@ func (q *Queries) CountAgentsByUser(ctx context.Context, userID pgtype.UUID) (in
 }
 
 const createAgent = `-- name: CreateAgent :one
-INSERT INTO agent (user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, mcp_config)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config
+INSERT INTO agent (user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, mcp_config, runtime_mode, provider_id, deliverable_type_id)
+VALUES ($1, $2, $3, $4, $13, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15)
+RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id
 `
 
 type CreateAgentParams struct {
@@ -147,7 +139,6 @@ type CreateAgentParams struct {
 	Name               string      `json:"name"`
 	Description        string      `json:"description"`
 	Instructions       string      `json:"instructions"`
-	RuntimeID          pgtype.UUID `json:"runtime_id"`
 	Model              pgtype.Text `json:"model"`
 	CustomEnv          []byte      `json:"custom_env"`
 	CustomArgs         []byte      `json:"custom_args"`
@@ -155,6 +146,10 @@ type CreateAgentParams struct {
 	Visibility         string      `json:"visibility"`
 	AvatarUrl          pgtype.Text `json:"avatar_url"`
 	McpConfig          []byte      `json:"mcp_config"`
+	RuntimeMode        string      `json:"runtime_mode"`
+	RuntimeID          pgtype.UUID `json:"runtime_id"`
+	ProviderID         pgtype.UUID `json:"provider_id"`
+	DeliverableTypeID  pgtype.UUID `json:"deliverable_type_id"`
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error) {
@@ -163,7 +158,6 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.Name,
 		arg.Description,
 		arg.Instructions,
-		arg.RuntimeID,
 		arg.Model,
 		arg.CustomEnv,
 		arg.CustomArgs,
@@ -171,6 +165,10 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.Visibility,
 		arg.AvatarUrl,
 		arg.McpConfig,
+		arg.RuntimeMode,
+		arg.RuntimeID,
+		arg.ProviderID,
+		arg.DeliverableTypeID,
 	)
 	var i Agent
 	err := row.Scan(
@@ -191,6 +189,9 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.McpConfig,
+		&i.RuntimeMode,
+		&i.ProviderID,
+		&i.DeliverableTypeID,
 	)
 	return i, err
 }
@@ -210,7 +211,7 @@ func (q *Queries) DeleteAgent(ctx context.Context, arg DeleteAgentParams) error 
 }
 
 const getAgent = `-- name: GetAgent :one
-SELECT id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config FROM agent WHERE id = $1
+SELECT id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id FROM agent WHERE id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -234,12 +235,15 @@ func (q *Queries) GetAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.McpConfig,
+		&i.RuntimeMode,
+		&i.ProviderID,
+		&i.DeliverableTypeID,
 	)
 	return i, err
 }
 
 const getAgentByName = `-- name: GetAgentByName :one
-SELECT id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config FROM agent WHERE user_id = $1 AND name = $2
+SELECT id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id FROM agent WHERE user_id = $1 AND name = $2
 `
 
 type GetAgentByNameParams struct {
@@ -268,12 +272,15 @@ func (q *Queries) GetAgentByName(ctx context.Context, arg GetAgentByNameParams) 
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.McpConfig,
+		&i.RuntimeMode,
+		&i.ProviderID,
+		&i.DeliverableTypeID,
 	)
 	return i, err
 }
 
 const getAgentByTaskID = `-- name: GetAgentByTaskID :one
-SELECT a.id, a.user_id, a.name, a.description, a.instructions, a.runtime_id, a.model, a.custom_env, a.custom_args, a.max_concurrent_tasks, a.visibility, a.avatar_url, a.status, a.created_at, a.updated_at, a.archived_at, a.mcp_config FROM agent a
+SELECT a.id, a.user_id, a.name, a.description, a.instructions, a.runtime_id, a.model, a.custom_env, a.custom_args, a.max_concurrent_tasks, a.visibility, a.avatar_url, a.status, a.created_at, a.updated_at, a.archived_at, a.mcp_config, a.runtime_mode, a.provider_id, a.deliverable_type_id FROM agent a
 JOIN task t ON t.agent_id = a.id
 WHERE t.id = $1
 `
@@ -299,12 +306,15 @@ func (q *Queries) GetAgentByTaskID(ctx context.Context, id pgtype.UUID) (Agent, 
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.McpConfig,
+		&i.RuntimeMode,
+		&i.ProviderID,
+		&i.DeliverableTypeID,
 	)
 	return i, err
 }
 
 const listAgentsByDaemon = `-- name: ListAgentsByDaemon :many
-SELECT a.id, a.user_id, a.name, a.description, a.instructions, a.runtime_id, a.model, a.custom_env, a.custom_args, a.max_concurrent_tasks, a.visibility, a.avatar_url, a.status, a.created_at, a.updated_at, a.archived_at, a.mcp_config FROM agent a
+SELECT a.id, a.user_id, a.name, a.description, a.instructions, a.runtime_id, a.model, a.custom_env, a.custom_args, a.max_concurrent_tasks, a.visibility, a.avatar_url, a.status, a.created_at, a.updated_at, a.archived_at, a.mcp_config, a.runtime_mode, a.provider_id, a.deliverable_type_id FROM agent a
 JOIN agent_runtime ar ON a.runtime_id = ar.id
 WHERE ar.daemon_id = $1
 ORDER BY a.created_at ASC
@@ -337,6 +347,56 @@ func (q *Queries) ListAgentsByDaemon(ctx context.Context, daemonID pgtype.UUID) 
 			&i.UpdatedAt,
 			&i.ArchivedAt,
 			&i.McpConfig,
+			&i.RuntimeMode,
+			&i.ProviderID,
+			&i.DeliverableTypeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentsByProvider = `-- name: ListAgentsByProvider :many
+SELECT id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id FROM agent
+WHERE provider_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListAgentsByProvider(ctx context.Context, providerID pgtype.UUID) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listAgentsByProvider, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Name,
+			&i.Description,
+			&i.Instructions,
+			&i.RuntimeID,
+			&i.Model,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.MaxConcurrentTasks,
+			&i.Visibility,
+			&i.AvatarUrl,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ArchivedAt,
+			&i.McpConfig,
+			&i.RuntimeMode,
+			&i.ProviderID,
+			&i.DeliverableTypeID,
 		); err != nil {
 			return nil, err
 		}
@@ -349,7 +409,7 @@ func (q *Queries) ListAgentsByDaemon(ctx context.Context, daemonID pgtype.UUID) 
 }
 
 const listAgentsByUser = `-- name: ListAgentsByUser :many
-SELECT id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config FROM agent
+SELECT id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id FROM agent
 WHERE user_id = $1 OR visibility = 'shared'
 ORDER BY created_at DESC
 `
@@ -381,6 +441,9 @@ func (q *Queries) ListAgentsByUser(ctx context.Context, userID pgtype.UUID) ([]A
 			&i.UpdatedAt,
 			&i.ArchivedAt,
 			&i.McpConfig,
+			&i.RuntimeMode,
+			&i.ProviderID,
+			&i.DeliverableTypeID,
 		); err != nil {
 			return nil, err
 		}
@@ -395,7 +458,7 @@ func (q *Queries) ListAgentsByUser(ctx context.Context, userID pgtype.UUID) ([]A
 const restoreAgent = `-- name: RestoreAgent :one
 UPDATE agent SET archived_at = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config
+RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id
 `
 
 func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -419,6 +482,9 @@ func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, erro
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.McpConfig,
+		&i.RuntimeMode,
+		&i.ProviderID,
+		&i.DeliverableTypeID,
 	)
 	return i, err
 }
@@ -428,34 +494,43 @@ UPDATE agent SET
     name = COALESCE($1, name),
     description = COALESCE($2, description),
     instructions = COALESCE($3, instructions),
-    runtime_id = COALESCE($4, runtime_id),
-    model = COALESCE($5, model),
-    custom_env = COALESCE($6, custom_env),
-    custom_args = COALESCE($7, custom_args),
-    max_concurrent_tasks = COALESCE($8, max_concurrent_tasks),
-    visibility = COALESCE($9, visibility),
-    avatar_url = COALESCE($10, avatar_url),
-    mcp_config = CASE WHEN $11::boolean THEN $12 ELSE mcp_config END,
+    runtime_id = CASE WHEN $4::boolean THEN $5 ELSE runtime_id END,
+    model = COALESCE($6, model),
+    custom_env = COALESCE($7, custom_env),
+    custom_args = COALESCE($8, custom_args),
+    max_concurrent_tasks = COALESCE($9, max_concurrent_tasks),
+    visibility = COALESCE($10, visibility),
+    avatar_url = COALESCE($11, avatar_url),
+    mcp_config = CASE WHEN $12::boolean THEN $13 ELSE mcp_config END,
+    runtime_mode = COALESCE($14, runtime_mode),
+    provider_id = CASE WHEN $15::boolean THEN $16 ELSE provider_id END,
+    deliverable_type_id = CASE WHEN $17::boolean THEN $18 ELSE deliverable_type_id END,
     updated_at = now()
-WHERE id = $13 AND user_id = $14
-RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config
+WHERE id = $19 AND user_id = $20
+RETURNING id, user_id, name, description, instructions, runtime_id, model, custom_env, custom_args, max_concurrent_tasks, visibility, avatar_url, status, created_at, updated_at, archived_at, mcp_config, runtime_mode, provider_id, deliverable_type_id
 `
 
 type UpdateAgentParams struct {
-	Name               pgtype.Text `json:"name"`
-	Description        pgtype.Text `json:"description"`
-	Instructions       pgtype.Text `json:"instructions"`
-	RuntimeID          pgtype.UUID `json:"runtime_id"`
-	Model              pgtype.Text `json:"model"`
-	CustomEnv          []byte      `json:"custom_env"`
-	CustomArgs         []byte      `json:"custom_args"`
-	MaxConcurrentTasks pgtype.Int4 `json:"max_concurrent_tasks"`
-	Visibility         pgtype.Text `json:"visibility"`
-	AvatarUrl          pgtype.Text `json:"avatar_url"`
-	SetMcpConfig       bool        `json:"set_mcp_config"`
-	McpConfig          []byte      `json:"mcp_config"`
-	ID                 pgtype.UUID `json:"id"`
-	UserID             pgtype.UUID `json:"user_id"`
+	Name                 pgtype.Text `json:"name"`
+	Description          pgtype.Text `json:"description"`
+	Instructions         pgtype.Text `json:"instructions"`
+	SetRuntimeID         bool        `json:"set_runtime_id"`
+	RuntimeID            pgtype.UUID `json:"runtime_id"`
+	Model                pgtype.Text `json:"model"`
+	CustomEnv            []byte      `json:"custom_env"`
+	CustomArgs           []byte      `json:"custom_args"`
+	MaxConcurrentTasks   pgtype.Int4 `json:"max_concurrent_tasks"`
+	Visibility           pgtype.Text `json:"visibility"`
+	AvatarUrl            pgtype.Text `json:"avatar_url"`
+	SetMcpConfig         bool        `json:"set_mcp_config"`
+	McpConfig            []byte      `json:"mcp_config"`
+	RuntimeMode          pgtype.Text `json:"runtime_mode"`
+	SetProviderID        bool        `json:"set_provider_id"`
+	ProviderID           pgtype.UUID `json:"provider_id"`
+	SetDeliverableTypeID bool        `json:"set_deliverable_type_id"`
+	DeliverableTypeID    pgtype.UUID `json:"deliverable_type_id"`
+	ID                   pgtype.UUID `json:"id"`
+	UserID               pgtype.UUID `json:"user_id"`
 }
 
 func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent, error) {
@@ -463,6 +538,7 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		arg.Name,
 		arg.Description,
 		arg.Instructions,
+		arg.SetRuntimeID,
 		arg.RuntimeID,
 		arg.Model,
 		arg.CustomEnv,
@@ -472,6 +548,11 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		arg.AvatarUrl,
 		arg.SetMcpConfig,
 		arg.McpConfig,
+		arg.RuntimeMode,
+		arg.SetProviderID,
+		arg.ProviderID,
+		arg.SetDeliverableTypeID,
+		arg.DeliverableTypeID,
 		arg.ID,
 		arg.UserID,
 	)
@@ -494,6 +575,23 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.McpConfig,
+		&i.RuntimeMode,
+		&i.ProviderID,
+		&i.DeliverableTypeID,
 	)
 	return i, err
+}
+
+const updateAgentStatus = `-- name: UpdateAgentStatus :exec
+UPDATE agent SET status = $1, updated_at = now() WHERE id = $2
+`
+
+type UpdateAgentStatusParams struct {
+	Status string      `json:"status"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusParams) error {
+	_, err := q.db.Exec(ctx, updateAgentStatus, arg.Status, arg.ID)
+	return err
 }

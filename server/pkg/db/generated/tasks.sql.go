@@ -42,7 +42,7 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id
 `
 
 type ClaimPendingTaskParams struct {
@@ -73,21 +73,37 @@ func (q *Queries) ClaimPendingTask(ctx context.Context, arg ClaimPendingTaskPara
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }
 
+const countRunningTasksByAgent = `-- name: CountRunningTasksByAgent :one
+SELECT COUNT(*) FROM task
+WHERE agent_id = $1 AND status = 'running'
+`
+
+// Returns the count of tasks with status 'running' for a given agent.
+func (q *Queries) CountRunningTasksByAgent(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRunningTasksByAgent, agentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createTask = `-- name: CreateTask :one
-INSERT INTO task (user_id, agent_type, prompt, agent_id)
-VALUES ($1, $2, $3, $4)
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
+INSERT INTO task (user_id, agent_type, prompt, agent_id, provider_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id
 `
 
 type CreateTaskParams struct {
-	UserID    pgtype.UUID `json:"user_id"`
-	AgentType string      `json:"agent_type"`
-	Prompt    string      `json:"prompt"`
-	AgentID   pgtype.UUID `json:"agent_id"`
+	UserID     pgtype.UUID `json:"user_id"`
+	AgentType  string      `json:"agent_type"`
+	Prompt     string      `json:"prompt"`
+	AgentID    pgtype.UUID `json:"agent_id"`
+	ProviderID pgtype.UUID `json:"provider_id"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -96,6 +112,7 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.AgentType,
 		arg.Prompt,
 		arg.AgentID,
+		arg.ProviderID,
 	)
 	var i Task
 	err := row.Scan(
@@ -118,14 +135,16 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }
 
 const createTaskWithWorkflow = `-- name: CreateTaskWithWorkflow :one
-INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
+INSERT INTO task (user_id, agent_type, prompt, agent_id, deliverables, workspace_mode, workspace_path, provider_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id
 `
 
 type CreateTaskWithWorkflowParams struct {
@@ -136,6 +155,7 @@ type CreateTaskWithWorkflowParams struct {
 	Deliverables  []byte      `json:"deliverables"`
 	WorkspaceMode string      `json:"workspace_mode"`
 	WorkspacePath pgtype.Text `json:"workspace_path"`
+	ProviderID    pgtype.UUID `json:"provider_id"`
 }
 
 func (q *Queries) CreateTaskWithWorkflow(ctx context.Context, arg CreateTaskWithWorkflowParams) (Task, error) {
@@ -147,6 +167,7 @@ func (q *Queries) CreateTaskWithWorkflow(ctx context.Context, arg CreateTaskWith
 		arg.Deliverables,
 		arg.WorkspaceMode,
 		arg.WorkspacePath,
+		arg.ProviderID,
 	)
 	var i Task
 	err := row.Scan(
@@ -169,6 +190,8 @@ func (q *Queries) CreateTaskWithWorkflow(ctx context.Context, arg CreateTaskWith
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }
@@ -290,7 +313,7 @@ func (q *Queries) GetAgentsRunCounts30d(ctx context.Context) ([]GetAgentsRunCoun
 }
 
 const getTaskByID = `-- name: GetTaskByID :one
-SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url FROM task
+SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id FROM task
 WHERE id = $1
 `
 
@@ -317,6 +340,8 @@ func (q *Queries) GetTaskByID(ctx context.Context, id pgtype.UUID) (Task, error)
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }
@@ -335,7 +360,7 @@ func (q *Queries) GetTaskDaemonID(ctx context.Context, id pgtype.UUID) (pgtype.U
 }
 
 const listTasksByAgent = `-- name: ListTasksByAgent :many
-SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url FROM task
+SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id FROM task
 WHERE agent_id = $1 AND user_id = $2
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4
@@ -382,6 +407,8 @@ func (q *Queries) ListTasksByAgent(ctx context.Context, arg ListTasksByAgentPara
 			&i.WorkspaceMode,
 			&i.WorkspacePath,
 			&i.GitRepoUrl,
+			&i.TokenUsage,
+			&i.ProviderID,
 		); err != nil {
 			return nil, err
 		}
@@ -394,7 +421,7 @@ func (q *Queries) ListTasksByAgent(ctx context.Context, arg ListTasksByAgentPara
 }
 
 const listTasksByUser = `-- name: ListTasksByUser :many
-SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url FROM task
+SELECT id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id FROM task
 WHERE user_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -435,6 +462,8 @@ func (q *Queries) ListTasksByUser(ctx context.Context, arg ListTasksByUserParams
 			&i.WorkspaceMode,
 			&i.WorkspacePath,
 			&i.GitRepoUrl,
+			&i.TokenUsage,
+			&i.ProviderID,
 		); err != nil {
 			return nil, err
 		}
@@ -448,7 +477,7 @@ func (q *Queries) ListTasksByUser(ctx context.Context, arg ListTasksByUserParams
 
 const updateTaskCompleted = `-- name: UpdateTaskCompleted :exec
 UPDATE task
-SET status = 'completed', exit_code = $2, output_preview = $3, completed_at = now(), updated_at = now()
+SET status = 'completed', exit_code = $2, output_preview = $3, token_usage = $4, completed_at = now(), updated_at = now()
 WHERE id = $1
 `
 
@@ -456,10 +485,16 @@ type UpdateTaskCompletedParams struct {
 	ID            pgtype.UUID `json:"id"`
 	ExitCode      pgtype.Int4 `json:"exit_code"`
 	OutputPreview pgtype.Text `json:"output_preview"`
+	TokenUsage    []byte      `json:"token_usage"`
 }
 
 func (q *Queries) UpdateTaskCompleted(ctx context.Context, arg UpdateTaskCompletedParams) error {
-	_, err := q.db.Exec(ctx, updateTaskCompleted, arg.ID, arg.ExitCode, arg.OutputPreview)
+	_, err := q.db.Exec(ctx, updateTaskCompleted,
+		arg.ID,
+		arg.ExitCode,
+		arg.OutputPreview,
+		arg.TokenUsage,
+	)
 	return err
 }
 

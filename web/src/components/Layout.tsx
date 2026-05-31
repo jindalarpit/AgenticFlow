@@ -108,6 +108,7 @@ export function Layout({ children }: LayoutProps) {
 const navItems = [
   { to: "/", label: "Dashboard" },
   { to: "/agents", label: "Agents" },
+  { to: "/providers", label: "Providers" },
   { to: "/settings", label: "Settings" },
 ];
 

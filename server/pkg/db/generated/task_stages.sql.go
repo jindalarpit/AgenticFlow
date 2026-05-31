@@ -27,7 +27,7 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url
+RETURNING id, user_id, agent_type, agent_runtime_id, daemon_id, prompt, status, exit_code, error_message, output_preview, started_at, completed_at, created_at, updated_at, agent_id, deliverables, workspace_mode, workspace_path, git_repo_url, token_usage, provider_id
 `
 
 type ClaimPendingTaskWithStageParams struct {
@@ -60,6 +60,8 @@ func (q *Queries) ClaimPendingTaskWithStage(ctx context.Context, arg ClaimPendin
 		&i.WorkspaceMode,
 		&i.WorkspacePath,
 		&i.GitRepoUrl,
+		&i.TokenUsage,
+		&i.ProviderID,
 	)
 	return i, err
 }

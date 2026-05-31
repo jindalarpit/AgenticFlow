@@ -284,13 +284,16 @@ func (d *Daemon) executeConversationalAgent(
 	reporter := &realHTTPMessageReporter{client: d.client}
 	batchReporter := NewBatchReporter(reporter, task.TaskID, defaultFlushInterval, logger)
 
+	msgsDone := make(chan struct{})
 	go func() {
+		defer close(msgsDone)
 		for msg := range session.Messages {
 			batchReporter.Feed(msg)
 		}
 	}()
 
 	result := <-session.Result
+	<-msgsDone
 	batchReporter.Close()
 
 	if len(result.Usage) > 0 {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useSkills } from "../../hooks/useSkills";
 
 interface SkillsPickerProps {
@@ -95,11 +96,19 @@ export function SkillsPicker({ value, onAdd, onRemove }: SkillsPickerProps) {
               </div>
             )}
           </>
+        ) : allSkills && allSkills.length > 0 ? (
+          <p className="text-xs text-gray-500">
+            All available skills are attached.
+          </p>
         ) : (
           <p className="text-xs text-gray-500">
-            {allSkills && allSkills.length > 0
-              ? "All available skills are attached."
-              : "No skills available. Create skills first."}
+            No personal skills yet.{" "}
+            <Link
+              to="/skills/library"
+              className="text-blue-600 hover:text-blue-700 hover:underline"
+            >
+              Browse Skill Library
+            </Link>
           </p>
         )}
       </div>

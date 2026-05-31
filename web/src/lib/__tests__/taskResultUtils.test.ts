@@ -22,16 +22,16 @@ function makeMessage(
 /* ─── extractDashboardResult ─── */
 
 describe("extractDashboardResult", () => {
-  it("returns content of the highest-sequence stdout message", () => {
+  it("concatenates all stdout messages sorted by sequence", () => {
     const messages: TaskMessage[] = [
       makeMessage({ sequence: 1, content: "first" }),
       makeMessage({ sequence: 3, content: "third" }),
       makeMessage({ sequence: 2, content: "second" }),
     ];
-    expect(extractDashboardResult(messages, null)).toBe("third");
+    expect(extractDashboardResult(messages, null)).toBe("firstsecondthird");
   });
 
-  it("ignores stderr messages when selecting stdout", () => {
+  it("ignores stderr messages when concatenating stdout", () => {
     const messages: TaskMessage[] = [
       makeMessage({ sequence: 1, content: "stdout content", stream: "stdout" }),
       makeMessage({ sequence: 5, content: "stderr content", stream: "stderr" }),
@@ -68,6 +68,15 @@ describe("extractDashboardResult", () => {
       makeMessage({ sequence: 1, content: "only one" }),
     ];
     expect(extractDashboardResult(messages, "preview")).toBe("only one");
+  });
+
+  it("concatenates multiple stdout chunks in sequence order", () => {
+    const messages: TaskMessage[] = [
+      makeMessage({ sequence: 3, content: "world\n" }),
+      makeMessage({ sequence: 1, content: "Hello " }),
+      makeMessage({ sequence: 2, content: "" }),
+    ];
+    expect(extractDashboardResult(messages, null)).toBe("Hello world\n");
   });
 });
 
